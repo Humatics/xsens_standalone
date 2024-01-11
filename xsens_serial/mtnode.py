@@ -10,8 +10,8 @@ class XSensDriver(object):
 
     def __init__(self):
 
-        device = 'auto'
-        baudrate = 115200
+        device = "/dev/ttyUSB0"
+        baudrate = 921600
         timeout = 0.05
         if device == 'auto':
             devs = mtdevice.find_devices()
@@ -32,7 +32,9 @@ class XSensDriver(object):
         print("MT node interface: %s at %d bd." % (device, baudrate))
 
         # Enable config mode
-        self.mt = mtdevice.MTDevice(device, baudrate, timeout, True, True, False)
+        self.mt = mtdevice.MTDevice(device, baudrate, timeout, True, True, True)
+
+        print "HERE"
 
         # Configure (see bottom of mtdevice.py)
         # mf100fe = magnetometer at 100hz

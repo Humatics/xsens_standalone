@@ -19,7 +19,7 @@ from mtdef import MID, OutputMode, OutputSettings, MTException, Baudrates, \
 class MTDevice(object):
     """XSens MT device communication object."""
 
-    def __init__(self, port, baudrate=115200, timeout=0.002, autoconf=True,
+    def __init__(self, port, baudrate=115200, timeout=0.2, autoconf=True,
                  config_mode=False, verbose=False):
         """Open device."""
         self.verbose = verbose
@@ -217,7 +217,7 @@ class MTDevice(object):
         """Get the device identifier."""
         self._ensure_config_state()
         data = self.write_ack(MID.ReqDID)
-        deviceID, = struct.unpack('!I', data)
+        deviceID, = struct.unpack('!Q', data)
         return deviceID
 
     def GetProductCode(self):
@@ -255,7 +255,55 @@ class MTDevice(object):
     def SetBaudrate(self, brid):
         """Set the baudrate of the device using the baudrate id."""
         self._ensure_config_state()
-        self.write_ack(MID.SetBaudrate, (brid,))
+        data = struct.pack('!B', brid)
+        self.write_ack(MID.SetBaudrate, data)
+
+    def GetCanConfig(self):
+        self._ensure_config_state()
+        data = self.write_ack(MID.SetCanConfig)
+        baud = struct.unpack('!I', data)[0]
+        return data[0], (baud & 0x0FFF)
+    
+    def SetCanConfig(self, baudrate):
+        self._ensure_config_state()
+        if baudrate == 0:
+            enable = 0
+            brid = 0
+        else:
+            enable = 1
+            brid = Baudrates.get_can_BRID(baudrate)
+        data = struct.pack('!HBB', 0, enable, brid)
+        self.write_ack(MID.SetCanConfig, data)
+
+    def GetCanOutputConfig(self):
+        self._ensure_config_state()
+        data = self.write_ack(MID.SetCanOutputConfig)
+        return data
+    
+    def SetCanOutputConfig(self, output_configuration):
+        self._ensure_config_state()
+        data = b''.join(struct.pack('!BBIH', *output) for output in output_configuration)
+        self.write_ack(MID.SetCanOutputConfig, data)
+
+    def GetGnssPlatform(self):
+        self._ensure_config_state()
+        data = self.write_ack(MID.SetGnssPlatform)
+        return data
+
+    def GetGnssReceiver(self):
+        self._ensure_config_state()
+        data = self.write_ack(MID.SetGnssReceiver)
+        return data
+
+    def GetHardwareVersion(self):
+        self._ensure_config_state()
+        data = self.write_ack(MID.SetHardwareVersion)
+        return data
+
+    def GetPortConfig(self):
+        self._ensure_config_state()
+        data = self.write_ack(MID.SetPortConfig)
+        return data
 
     def GetErrorMode(self):
         """Get the current error mode of the device."""
@@ -285,13 +333,13 @@ class MTDevice(object):
         """Get the option flags (MTi-1 series)."""
         self._ensure_config_state()
         data = self.write_ack(MID.SetOptionFlags)
-        set_flags, clear_flags = struct.unpack('!II', data)
-        return set_flags, clear_flags
+        set_flags = struct.unpack('!I', data)
+        return set_flags
 
     def SetOptionFlags(self, set_flags, clear_flags):
         """Set the option flags (MTi-1 series)."""
         self._ensure_config_state()
-        data = struct.pack('!II', set_flags, clear_flags)
+        data = struct.pack('!I', set_flags, clear_flags)
         self.write_ack(MID.SetOptionFlags, data)
 
     def GetLocationID(self):
@@ -389,7 +437,7 @@ class MTDevice(object):
         """Get the NMEA data output configuration."""
         self._ensure_config_state()
         data = self.write_ack(MID.SetStringOutputType)
-        string_output_type, = struct.unpack('!H', data)
+        string_output_type, = struct.unpack('!H', data[-2:])
         return string_output_type
 
     def SetStringOutputType(self, string_output_type):
@@ -421,8 +469,8 @@ class MTDevice(object):
         self._ensure_config_state()
         data = struct.pack('!B', parameter)
         data = self.write_ack(MID.SetAlignmentRotation, data)
-        q0, q1, q2, q3 = struct.unpack('!ffff', data)
-        return q0, q1, q2, q3
+        frame, q0, q1, q2, q3 = struct.unpack('!Bffff', data)
+        return frame, q0, q1, q2, q3
 
     def SetAlignmentRotation(self, parameter, quaternion):
         """Set the object alignment.
@@ -552,7 +600,7 @@ class MTDevice(object):
         """Get the ID of the currently used XKF scenario."""
         self._ensure_config_state()
         data = self.write_ack(MID.SetCurrentScenario)
-        _, self.scenario_id = struct.unpack('!BB', data)  # version, id
+        _, self.scenario_id = struct.unpack('!BB', data[:2])  # version, id
         return self.scenario_id
 
     def SetCurrentScenario(self, scenario_id):
@@ -1114,6 +1162,7 @@ class MTDevice(object):
 def find_devices(verbose=False):
     mtdev_list = []
     for port in glob.glob("/dev/tty*S*"):
+        print port
         if verbose:
             print "Trying '%s'" % port
         try:
@@ -1129,10 +1178,10 @@ def find_devices(verbose=False):
 # Auto detect baudrate
 ################################################################
 def find_baudrate(port, verbose=False):
-    baudrates = (115200, 460800, 921600, 230400, 57600, 38400, 19200, 9600)
+    baudrates = [20000000, 916200, 460800, 230400, 115200, 57600, 38400, 19200, 9600, 4800]
     for br in baudrates:
         if verbose:
-            print "Trying %d bd:" % br,
+            print "Trying %d bd:\n" % br,
             sys.stdout.flush()
         try:
             mt = MTDevice(port, br, verbose=verbose)
@@ -1140,6 +1189,9 @@ def find_baudrate(port, verbose=False):
             if verbose:
                 print "fail: unable to open device."
             raise MTException("unable to open %s" % port)
+        except:
+            continue
+
         try:
             mt.GoToConfig()
             mt.GoToMeasurement()
@@ -1168,6 +1220,10 @@ Commands:
         Change baudrate from BAUD (see below) to NEW_BAUD.
     -c, --configure=OUTPUT
         Configure the device (see OUTPUT description below).
+    --cb=NEW_CAN_BAUD
+        Change CAN baudrate to NEW_CAN_BAUD, set NEW_CAN_BAUD to 0 to disable CAN
+    --cc=CAN_OUTPUT
+        Configure the can output (see CAN_OUTPUT description below).
     -e, --echo
         Print MTData. It is the default if no other command is supplied.
     -i, --inspect
@@ -1262,6 +1318,48 @@ Configuration option:
                 "oq400fw,if2000"
             For longitude, latitude, altitude and orientation (on MTi-G-700):
                 "pl400fe,pa400fe,oq400fe"
+    CAN_OUTPUT
+        The format is a sequence of "<group><type><frequency>?"
+        separated by commas. The frequency is optional.
+            t  Timestamp:
+                ts  SampleTime
+                tu  UTC Time
+                tg  GroupCounter
+            s  Status:
+                ss  Status Word
+                se  Error
+                sw  Warning
+            o  Orientation data (max frequency: 400 Hz):
+                oq  Quaternion
+                oe  Euler Angles
+            i  Inertial data (max frequency: 400 Hz):
+                iq  DeltaQ
+                iv  DeltaV
+                if  Free Acceleration
+                ir  Rate of Turn
+                ia  Acceleration
+            m  Magentic Field data (max frequency: 100 Hz):
+                mm  Magnetic Field
+            f  Temperature data (max frequency: 400 Hz):
+                ft  Temperature
+            b  Pressure data (max frequency: 100 Hz):
+                bp  Barometric Pressure
+            h  High-Rate data 
+                ha  Accekeration HR (max frequency: 2000 Hz)
+                hr  Rate of Turn HR (max frequency: 1600 Hz)
+            p  Position and Velocity data (max frequency: 400 Hz):
+                pl  Latitude and Longitude
+                pv  Velocity
+                pa  Altitude Ellipsoid
+            g  GNSS data
+                gs  GNSS receiver status
+                gd  GNSS receiver DOP
+        Frequency is specified in decimal and is assumed to be the maximum
+        frequency if it is omitted.
+        Example:
+            The default configuration for Focus Mti680G can be specified as:
+                "se,sw,ts,tg,tu,ss,oq400,iv400,ir,iq,ia,pl400,pv,pa,gd,gs"
+
 
 Legacy options:
     -m, --output-mode=MODE
@@ -1326,9 +1424,9 @@ Deprecated options:
 def main():
     # parse command line
     shopts = 'hra:c:eild:b:m:s:p:f:x:v'
-    lopts = ['help', 'reset', 'change-baudrate=', 'configure=', 'echo',
-             'inspect', 'legacy-configure', 'device=', 'baudrate=',
-             'output-mode=', 'output-settings=', 'period=',
+    lopts = ['help', 'reset', 'change-baudrate=', 'configure=', 'cb=',
+             'cc=', 'echo', 'inspect', 'legacy-configure', 'device=', 
+             'baudrate=', 'output-mode=', 'output-settings=', 'period=',
              'deprecated-skip-factor=', 'xkf-scenario=', 'verbose']
     try:
         opts, args = getopt.gnu_getopt(sys.argv[1:], shopts, lopts)
@@ -1362,10 +1460,22 @@ def main():
                 return 1
             actions.append('change-baudrate')
         elif o in ('-c', '--configure'):
-            output_config = get_output_config(a)
+            output_config = get_can_output_config(a)
             if output_config is None:
                 return 1
             actions.append('configure')
+        elif o in ('--cb', '--can-baudrate'):
+            try:
+                new_can_baudrate = int(a)
+            except ValueError:
+                print "can_baudrate argument must be integer."
+                return 1
+            actions.append('can-baudrate')
+        elif o in ('--cc', '--can-configure'):
+            can_output_config = get_can_output_config(a)
+            if can_output_config is None:
+                return 1
+            actions.append('can-configure')
         elif o in ('-e', '--echo'):
             actions.append('echo')
         elif o in ('-i', '--inspect'):
@@ -1452,6 +1562,17 @@ def main():
             sys.stdout.flush()
             mt.SetOutputConfiguration(output_config)
             print " Ok"  # should we test that it was actually ok?
+        if 'can-baudrate' in actions:
+            print "Changing can baudrate to %d:" % (new_can_baudrate),
+            sys.stdout.flush()
+            mt.SetCanConfig(new_can_baudrate)
+            print " Ok"  # should we test that it was actually ok?
+        if 'can-configure' in actions:
+            print "Changing output configuration",
+            sys.stdout.flush()
+            mt.SetCanOutputConfig(can_output_config)
+            print " Ok"  # should we test that it was actually ok?
+
         if 'legacy-configure' in actions:
             if mode is None:
                 print "output-mode is require to configure the device in "\
@@ -1483,7 +1604,6 @@ def main():
         print "MTErrorMessage:", e
     except MTException as e:
         print "MTException:", e
-
 
 def inspect(mt, device, baudrate):
     """Inspection."""
@@ -1521,13 +1641,21 @@ def inspect(mt, device, baudrate):
             else:
                 raise e
     print "Device: %s at %d Bd:" % (device, baudrate)
-    try_message("device ID:", mt.GetDeviceID, hex_fmt(4))
+    try_message("device ID:", mt.GetDeviceID, hex_fmt(8))
     try_message("product code:", mt.GetProductCode)
     try_message("firmware revision:", mt.GetFirmwareRev)
     try_message("baudrate:", mt.GetBaudrate)
     try_message("error mode:", mt.GetErrorMode, hex_fmt(2))
-    try_message("option flags:", mt.GetOptionFlags, hex_fmt(8))
+    try_message("option flags:", mt.GetOptionFlags, hex_fmt())
     try_message("location ID:", mt.GetLocationID, hex_fmt(2))
+    #TODO: Fix output formatting
+    try_message("CAN config", mt.GetCanConfig)
+    try_message("CAN output config", mt.GetCanOutputConfig)
+    try_message("GNSS Platform", mt.GetGnssPlatform)
+    try_message("GNSS Receiver", mt.GetGnssReceiver)
+    try_message("Hardware Version", mt.GetHardwareVersion)
+    try_message("Port Config", mt.GetPortConfig)
+
     try_message("transmit delay:", mt.GetTransmitDelay)
     try_message("synchronization settings:", mt.GetSyncSettings, sync_fmt)
     try_message("general configuration:", mt.GetConfiguration)
@@ -1547,6 +1675,55 @@ def inspect(mt, device, baudrate):
     try_message("current scenario ID:", mt.GetCurrentScenario)
     try_message("UTC time:", mt.GetUTCTime)
 
+def get_can_output_config(config_arg):
+    freqs_list = [
+        [400, 200, 100, 80, 50, 40, 25, 20, 16, 10, 8, 5, 4, 2, 1],
+        [100, 50, 25, 20, 10, 5, 4, 2, 1],
+        [2000, 1000, 500, 400, 250, 200, 125, 100, 80, 50, 40, 25, 20, 16, 10, 8, 5, 4, 2, 1],
+        [1600, 800, 400, 320, 200, 160, 100, 80, 64, 50, 40, 32, 25, 20, 16, 10, 8, 5, 4, 2, 1],
+        [65535]
+    ]
+    code_dict = {
+        'ts': (0x05, [1]),
+        'tu': (0x07, [1]),
+        'tg': (0x06, [1]),
+        'ss': (0x11, [1]),
+        'se': (0x01, [1]),
+        'sw': (0x02, [1]),
+        'oq': (0x21, freqs_list[0]),
+        'oe': (0x22, freqs_list[0]),
+        'iq': (0x33, freqs_list[0]),
+        'iv': (0x31, freqs_list[0]),
+        'if': (0x35, freqs_list[0]),
+        'ir': (0x32, freqs_list[0]),
+        'ia': (0x34, freqs_list[0]),
+        'mm': (0x41, freqs_list[1]),
+        'ft': (0x51, freqs_list[0]),
+        'bp': (0x52, freqs_list[1]),
+        'ha': (0x62, freqs_list[2]),
+        'hr': (0x61, freqs_list[3]),
+        'pl': (0x71, freqs_list[0]),
+        'pv': (0x76, freqs_list[0]),
+        'pa': (0x72, freqs_list[0]),
+        'gs': (0x79, freqs_list[4]),
+        'gd': (0x7a, freqs_list[4])
+    }
+
+    config_re = re.compile('([a-z]{2})(\d+)?')
+    output_configuration = []
+    try:
+        for item in config_arg.split(','):
+            group, frequency = config_re.findall(item.lower())[0]
+            code, freqs = code_dict[group]
+            if frequency:
+                frequency = min(freqs, key=lambda x: abs(x - int(frequency)))
+            else:
+                frequency = freqs[0]
+            output_configuration.append((code, 0, 0, frequency))
+        return output_configuration
+    except (IndexError, KeyError):
+        print 'could not parse output specification "%s"' % item
+        return
 
 def get_output_config(config_arg):
     """Parse the mark IV output configuration argument."""

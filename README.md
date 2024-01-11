@@ -88,3 +88,47 @@ Examples:
     For longitude, latitude, altitude and orientation (on MTi-G-700):
         "pl400fe,pa400fe,oq400fe"
 ```
+
+```
+CAN_OUTPUT
+        The format is a sequence of "<group><type><frequency>?"
+        separated by commas. The frequency is optional.
+            t  Timestamp:
+                ts  SampleTime
+                tu  UTC Time
+                tg  GroupCounter
+            s  Status:
+                ss  Status Word
+                se  Error
+                sw  Warning
+            o  Orientation data (max frequency: 400 Hz):
+                oq  Quaternion
+                oe  Euler Angles
+            i  Inertial data (max frequency: 400 Hz):
+                iq  DeltaQ
+                iv  DeltaV
+                if  Free Acceleration
+                ir  Rate of Turn
+                ia  Acceleration
+            m  Magentic Field data (max frequency: 100 Hz):
+                mm  Magnetic Field
+            f  Temperature data (max frequency: 400 Hz):
+                ft  Temperature
+            b  Pressure data (max frequency: 100 Hz):
+                bp  Barometric Pressure
+            h  High-Rate data 
+                ha  Accekeration HR (max frequency: 2000 Hz)
+                hr  Rate of Turn HR (max frequency: 1600 Hz)
+            p  Position and Velocity data (max frequency: 400 Hz):
+                pl  Latitude and Longitude
+                pv  Velocity
+                pa  Altitude Ellipsoid
+            g  GNSS data
+                gs  GNSS receiver status
+                gd  GNSS receiver DOP
+        Frequency is specified in decimal and is assumed to be the maximum
+        frequency if it is omitted.
+        Example:
+            The default configuration for Focus Mti680G can be specified as:
+                "se,sw,ts,tg,tu,ss,oq400,iv400,ir,iq,ia,pl400,pv,pa,gd,gs"
+```

@@ -113,6 +113,13 @@ class MID:
     # Initiate No Rotation procedure (not on MTi-G), 2 bytes
     SetNoRotation = 0x22
 
+    SetCanConfig = 0xE6
+    SetCanOutputConfig = 0xE8
+    SetGnssPlatform = 0x76
+    SetGnssReceiver = 0xAC
+    SetHardwareVersion = 0x1E
+    SetPortConfig = 0x8C
+
 
 class DeprecatedMID:
     """Deprecated message Ids."""
@@ -174,7 +181,6 @@ def getMIDName(mid):
             return name+'Ack'
     return 'unknown MID'
 
-
 class Baudrates(object):
     """Baudrate information and conversion."""
     # Baudrate mapping between ID and value
@@ -193,7 +199,38 @@ class Baudrates(object):
         (0x09,   9600),
         (0x0B,   4800),
         (0x80, 921600)]
+    
+    Can_Baudrates = [
+        (0x0C, 1000000),
+        (0x0B, 800000),
+        (0x0A, 500000),
+        (0x00, 250000),
+        (0x01, 125000),
+        (0x02, 100000),
+        (0x03,  83300),
+        (0x04,  62500),
+        (0x05,  50000),
+        (0x06,  33300),
+        (0x07,  20000),
+        (0x08,  10000),
+        (0x09,   5000)]
 
+    @classmethod
+    def get_can_BRID(cls, baudrate):
+        """Get can_baudrate id for a given baudrate."""
+        for brid, br in cls.Can_Baudrates:
+            if baudrate == br:
+                return brid
+        raise MTException("unsupported baudrate.")
+
+    @classmethod
+    def get_can_BR(cls, baudrate_id):
+        """Get baudrate for a given baudrate id."""
+        for brid, br in cls.Can_Baudrates:
+            if baudrate_id == brid:
+                return br
+        raise MTException("unknown baudrate id.")
+    
     @classmethod
     def get_BRID(cls, baudrate):
         """Get baudrate id for a given baudrate."""
