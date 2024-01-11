@@ -1473,7 +1473,7 @@ def main():
                 return 1
             actions.append('change-baudrate')
         elif o in ('-c', '--configure'):
-            output_config = get_can_output_config(a)
+            output_config = get_output_config(a)
             if output_config is None:
                 return 1
             actions.append('configure')
