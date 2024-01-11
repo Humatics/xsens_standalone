@@ -199,7 +199,7 @@ class Baudrates(object):
         (0x09,   9600),
         (0x0B,   4800),
         (0x80, 921600)]
-    
+
     Can_Baudrates = [
         (0x0C, 1000000),
         (0x0B, 800000),
@@ -230,7 +230,7 @@ class Baudrates(object):
             if baudrate_id == brid:
                 return br
         raise MTException("unknown baudrate id.")
-    
+
     @classmethod
     def get_BRID(cls, baudrate):
         """Get baudrate id for a given baudrate."""

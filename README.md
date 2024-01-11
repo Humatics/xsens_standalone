@@ -12,7 +12,7 @@ This is just a small program that does not depend on the ROS framework that allo
 
 ## Configuration
 
-One can configure the IMU using a series of strings. This information can also be found in the bottom of the `mtdevice.py` file. One can then call `mtdevice.get_output_config(args)` to get the config file, and then finally configure the IMU by calling `SetOutputConfiguration()`. 
+One can configure the IMU using a series of strings. This information can also be found in the bottom of the `mtdevice.py` file. One can then call `mtdevice.get_output_config(args)` to get the config file, and then finally configure the IMU by calling `SetOutputConfiguration()`.
 
 
 ```
@@ -116,7 +116,7 @@ CAN_OUTPUT
                 ft  Temperature
             b  Pressure data (max frequency: 100 Hz):
                 bp  Barometric Pressure
-            h  High-Rate data 
+            h  High-Rate data
                 ha  Accekeration HR (max frequency: 2000 Hz)
                 hr  Rate of Turn HR (max frequency: 1600 Hz)
             p  Position and Velocity data (max frequency: 400 Hz):
