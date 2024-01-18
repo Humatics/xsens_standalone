@@ -43,8 +43,13 @@ class MID:
     # Device specific messages
     # Restore factory defaults
     RestoreFactoryDef = 0x0E
+
     # Baudrate, 1 byte
+    # * The SetBaudrate message is deprecated on the MTi 600-series. Use
+    #   SetPortConfig (0x8C) instead.
+    # https://www.xsens.com/hubfs/Downloads/Manuals/MT_Low-Level_Documentation.pdf
     SetBaudrate = 0x18
+
     # Run the built-in self test (MTi-1/10/100 series)
     RunSelftest = 0x24
     # Self test results, 2 bytes
@@ -115,9 +120,13 @@ class MID:
 
     SetCanConfig = 0xE6
     SetCanOutputConfig = 0xE8
+
     SetGnssPlatform = 0x76
     SetGnssReceiver = 0xAC
     SetHardwareVersion = 0x1E
+
+    XbuxInterface = 0x01
+    RtcmInterface = 0x06
     SetPortConfig = 0x8C
 
 

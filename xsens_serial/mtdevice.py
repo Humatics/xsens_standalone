@@ -304,7 +304,31 @@ class MTDevice(object):
     def GetPortConfig(self):
         self._ensure_config_state()
         data = self.write_ack(MID.SetPortConfig)
-        return data
+        port_config = [struct.unpack('!BBBB', data[o:o+4])
+                         for o in range(0, len(data), 4)]
+        for port in port_config:
+            protocol = port[1]
+            flowcontrol = port[2]
+            brid = port[3]
+            if protocol == MID.XbuxInterface:
+                xbus_baud = Baudrates.get_BR(brid)
+                xbus_flow = flowcontrol
+            elif protocol == MID.RtcmInterface:
+                rtcm_baud = Baudrates.get_BR(brid)
+        return xbus_baud, xbus_flow, rtcm_baud
+
+
+    def SetPortConfig(self, xbus_brid, xbus_flow, rtcm_brid):
+        """Set the baudrate of the device using the baudrate id."""
+        # Ignore config state
+        """Place MT device in configuration mode."""
+        self.write_msg(MID.GoToConfig)
+        self.state = DeviceState.Config
+        data = struct.pack('!HBBHBBHBB', MID.XbuxInterface, int(xbus_flow), xbus_brid, \
+                                        0x00, 0x00, 0x00, \
+                                        0,0,0)
+        self.write_msg(MID.SetPortConfig, data)
+        return None
 
     def GetErrorMode(self):
         """Get the current error mode of the device."""
@@ -1144,13 +1168,21 @@ class MTDevice(object):
             raise MTException("could not parse MTData message (too long).")
         return output
 
-    def ChangeBaudrate(self, baudrate):
+    def ChangeBaudrate(self, xbus_baud, xbus_flow, rtcm_baud):
         """Change the baudrate, reset the device and reopen communication."""
-        brid = Baudrates.get_BRID(baudrate)
-        self.SetBaudrate(brid)
+        current_xbus_baud, current_xbus_flow, current_rtcm_baud = self.GetPortConfig()
+        if xbus_baud is None:
+            xbus_baud = current_xbus_baud
+            xbus_flow = current_xbus_flow
+        if rtcm_baud is None:
+            rtcm_baud = current_rtcm_baud
+
+        xbus_brid = Baudrates.get_BRID(xbus_baud)
+        rtcm_brid = Baudrates.get_BRID(rtcm_baud)
+        self.SetPortConfig(xbus_brid, xbus_flow, rtcm_brid)
         self.Reset()
         # self.device.flush()
-        self.device.baudrate = baudrate
+        self.device.baudrate = xbus_baud
         # self.device.flush()
         time.sleep(0.01)
         self.read_msg()
@@ -1206,8 +1238,6 @@ def find_baudrate(port, verbose=False):
 
         try:
             mt.GoToConfig()
-            mt.GoToMeasurement()
-            mt.GoToMeasurement()
             mt.GoToMeasurement()
             if verbose:
                 print ("ok.")
@@ -1454,7 +1484,6 @@ def main():
     settings = None
     period = None
     skipfactor = None
-    new_baudrate = None
     new_xkf = None
     actions = []
     verbose = False
@@ -1466,10 +1495,8 @@ def main():
         elif o in ('-r', '--reset'):
             actions.append('reset')
         elif o in ('-a', '--change-baudrate'):
-            try:
-                new_baudrate = int(a)
-            except ValueError:
-                print ("change-baudrate argument must be integer.")
+            baud_config = get_baudrate_config(a)
+            if baud_config is None:
                 return 1
             actions.append('change-baudrate')
         elif o in ('-c', '--configure'):
@@ -1561,9 +1588,24 @@ def main():
         if 'inspect' in actions:
             inspect(mt, device, baudrate)
         if 'change-baudrate' in actions:
-            print ("Changing baudrate from %d to %d:") % (baudrate, new_baudrate),
-            sys.stdout.flush()
-            mt.ChangeBaudrate(new_baudrate)
+            xbus_baud = None
+            xbus_flow = None
+            rtcm_baud = None
+
+            if ('x' in baud_config) and (baud_config['x'][0] is not None):
+                print ("Changing xbus baudrate from %d to %d:\n") % \
+                    (baudrate, baud_config['x'][0]),
+                sys.stdout.flush()
+
+                xbus_baud = baud_config['x'][0]
+                xbus_flow = baud_config['x'][1]
+            if ('r' in baud_config) and (baud_config['r'][0] is not None):
+                print ("Changing rtcm baudrate to %d:\n") % (baud_config['r'][0]),
+                sys.stdout.flush()
+
+                rtcm_baud = baud_config['r'][0]
+
+            mt.ChangeBaudrate(xbus_baud, xbus_flow, rtcm_baud)
             print (" Ok")  # should we test that it was actually ok?
         if 'reset' in actions:
             print ("Restoring factory defaults"),
@@ -1662,7 +1704,7 @@ def inspect(mt, device, baudrate):
     try_message("option flags:", mt.GetOptionFlags, hex_fmt())
     try_message("location ID:", mt.GetLocationID, hex_fmt(2))
 
-    #TODO: Fix output formatting
+    # #TODO: Fix output formatting
     try_message("CAN config", mt.GetCanConfig)
     try_message("CAN output config", mt.GetCanOutputConfig)
     try_message("GNSS Platform", mt.GetGnssPlatform)
@@ -1804,6 +1846,18 @@ def get_output_config(config_arg):
         return output_configuration
     except (IndexError, KeyError):
         print ('could not parse output specification "%s"') % item
+        return
+
+def get_baudrate_config(baud_config):
+    config_re = re.compile('([xr])(\d+)([f]?)')
+    baud_configuration = {}
+    try:
+        for item in baud_config.split(','):
+            interface, frequency, flow_control = config_re.findall(item.lower())[0]
+            baud_configuration[interface] = [int(frequency), not(bool(flow_control))]
+        return baud_configuration
+    except (IndexError, KeyError):
+        print ('could not parse baudrate specification "%s"') % item
         return
 
 
