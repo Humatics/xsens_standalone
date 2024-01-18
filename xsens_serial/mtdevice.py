@@ -317,7 +317,6 @@ class MTDevice(object):
                 rtcm_baud = Baudrates.get_BR(brid)
         return xbus_baud, xbus_flow, rtcm_baud
 
-
     def SetPortConfig(self, xbus_brid, xbus_flow, rtcm_brid):
         """Set the baudrate of the device using the baudrate id."""
         # Ignore config state
@@ -326,7 +325,7 @@ class MTDevice(object):
         self.state = DeviceState.Config
         data = struct.pack('!HBBHBBHBB', MID.XbuxInterface, int(xbus_flow), xbus_brid, \
                                         0x00, 0x00, 0x00, \
-                                        0,0,0)
+                                        MID.RtcmInterface, 0x00, rtcm_brid)
         self.write_msg(MID.SetPortConfig, data)
         return None
 
@@ -1260,8 +1259,16 @@ Commands:
         Print this help and quit.
     -r, --reset
         Reset device to factory defaults.
-    -a, --change-baudrate=NEW_BAUD
-        Change baudrate from BAUD (see below) to NEW_BAUD.
+    -a, --change-baudrate=BAUD_CONFIG
+        Change baudrate:
+        The format is a sequence of "<interface><frequency><flow_control_off>?"
+        separated by commas.
+        The flow_control is optional and only applies to XBus.
+        The interface can be:
+            x   XBus
+            r   RTCM
+        ex: -a x115200f,r38400
+            sets XBus to 115200 baud without flow_control and RTCM to 38400 baud
     -c, --configure=OUTPUT
         Configure the device (see OUTPUT description below).
     --cb=NEW_CAN_BAUD
