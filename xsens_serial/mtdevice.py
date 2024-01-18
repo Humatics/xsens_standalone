@@ -192,7 +192,7 @@ class MTDevice(object):
         If go_to_config then send WakeUpAck in order to leave the device in
         config mode.
         """
-        self.write_ack(MID.Reset)
+        self.write_msg(MID.Reset)
         if go_to_config:
             time.sleep(0.01)
             mid, _ = self.read_msg()
