@@ -302,8 +302,8 @@ class MTDevice(object):
         return data
 
     def GetPortConfig(self):
-        self._ensure_config_state()
-        data = self.write_ack(MID.SetPortConfig)
+        # self._ensure_config_state()
+        data = self.write_msg(MID.SetPortConfig)
         port_config = [struct.unpack('!BBBB', data[o:o+4])
                          for o in range(0, len(data), 4)]
         for port in port_config:
@@ -1169,7 +1169,10 @@ class MTDevice(object):
 
     def ChangeBaudrate(self, xbus_baud, xbus_flow, rtcm_baud):
         """Change the baudrate, reset the device and reopen communication."""
-        current_xbus_baud, current_xbus_flow, current_rtcm_baud = self.GetPortConfig()
+        # current_xbus_baud, current_xbus_flow, current_rtcm_baud = self.GetPortConfig()
+        current_xbus_baud = "115200"
+        current_xbus_flow = 0
+        current_rtcm_baud = "38400"
         if xbus_baud is None:
             xbus_baud = current_xbus_baud
             xbus_flow = current_xbus_flow
