@@ -1,0 +1,21 @@
+[project]
+name = "xsens-standalone"
+dynamic = ["version"]
+description = "Xsens standalone"
+readme = "README.md"
+requires-python = ">=3.11"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+]
+dependencies = [
+    "pyserial>=3.5",
+]
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+[tool.ruff.format]
+quote-style = "preserve"
+

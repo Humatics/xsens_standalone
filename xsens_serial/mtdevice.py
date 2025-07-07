@@ -8,9 +8,19 @@ import glob
 import re
 import pprint
 
-from mtdef import MID, OutputMode, OutputSettings, MTException, Baudrates, \
-    XDIGroup, getMIDName, DeviceState, DeprecatedMID, MTErrorMessage, \
-    MTTimeoutException
+from mtdef import (
+    MID,
+    OutputMode,
+    OutputSettings,
+    MTException,
+    Baudrates,
+    XDIGroup,
+    getMIDName,
+    DeviceState,
+    DeprecatedMID,
+    MTErrorMessage,
+    MTTimeoutException,
+)
 
 
 ################################################################
@@ -19,27 +29,29 @@ from mtdef import MID, OutputMode, OutputSettings, MTException, Baudrates, \
 class MTDevice(object):
     """XSens MT device communication object."""
 
-    def __init__(self, port, baudrate=115200, timeout=0.02, autoconf=True,
-                 config_mode=False, verbose=False):
+    def __init__(
+        self, port, baudrate=115200, timeout=0.02, autoconf=True, config_mode=False, verbose=False, no_ack=False
+    ):
         """Open device."""
         self.verbose = verbose
+        self.no_ack = no_ack
         # serial interface to the device
         try:
-            self.device = serial.Serial(port, baudrate, timeout=timeout,
-                                        writeTimeout=timeout)
+            self.device = serial.Serial(port, baudrate, timeout=timeout, writeTimeout=timeout)
         except IOError:
             # FIXME with pyserial3 we might need some specific flags
-            self.device = serial.Serial(port, baudrate, timeout=timeout,
-                                        writeTimeout=timeout, rtscts=True,
-                                        dsrdtr=True)
-        self.device.flushInput()    # flush to make sure the port is ready TODO
-        self.device.flushOutput()    # flush to make sure the port is ready TODO
+            self.device = serial.Serial(port, baudrate, timeout=timeout, writeTimeout=timeout, rtscts=True, dsrdtr=True)
+        self.device.flushInput()  # flush to make sure the port is ready TODO
+        self.device.flushOutput()  # flush to make sure the port is ready TODO
         # timeout for communication
-        self.timeout = 100*timeout
+        self.timeout = 100 * timeout
         # state of the device
         self.state = None
-        if autoconf:
+        if autoconf and not self.no_ack:
             self.auto_config_legacy()
+        elif autoconf and self.no_ack:
+            if self.verbose:
+                print("No-ACK mode: skipping auto-configuration")
         else:
             # mode parameter of the IMU
             self.mode = None
@@ -59,31 +71,36 @@ class MTDevice(object):
         """Low-level message sending function."""
         length = len(data)
         if length > 254:
-            lendat = b'\xFF' + struct.pack('!H', length)
+            lendat = b'\xff' + struct.pack('!H', length)
         else:
             lendat = struct.pack('!B', length)
-        packet = b'\xFA\xFF' + struct.pack('!B', mid) + lendat + data
-        packet += struct.pack('!B', 0xFF & (-(sum(map(ord, packet[1:])))))
+        packet = b'\xfa\xff' + struct.pack('!B', mid) + lendat + data
+        packet += struct.pack('!B', 0xFF & (-(sum(packet[1:]))))
         msg = packet
         start = time.time()
-        while ((time.time()-start) < self.timeout) and self.device.read():
+        while ((time.time() - start) < self.timeout) and self.device.read():
             pass
         self.device.write(msg)
         if self.verbose:
-            print ("MT: Write message id 0x%02X (%s) with %d data bytes: [%s]") \
-                % (mid, getMIDName(mid), length,
-                 ' '.join("%02X" % ord(v) for v in data))
+            print(
+                "MT: Write message id 0x%02X (%s) with %d data bytes: [%s]"
+                % (
+                    mid,
+                    getMIDName(mid),
+                    length,
+                    ' '.join("%02X" % v for v in data),
+                )
+            )
 
     def waitfor(self, size=1):
         """Get a given amount of data."""
         buf = bytearray()
         for _ in range(100):
-            buf.extend(self.device.read(size-len(buf)))
+            buf.extend(self.device.read(size - len(buf)))
             if len(buf) == size:
                 return buf
             if self.verbose:
-                print ("waiting for %d bytes, got %d so far: [%s]") % \
-                    (size, len(buf), ' '.join('%02X' % v for v in buf))
+                print("waiting for %d bytes, got %d so far: [%s]" % (size, len(buf), ' '.join('%02X' % v for v in buf)))
         raise MTTimeoutException("waiting for message")
 
     def read_data_msg(self, buf=bytearray()):
@@ -95,7 +112,7 @@ class MTDevice(object):
             totlength = 5 + self.length
         else:
             totlength = 7 + self.length
-        while (time.time()-start) < self.timeout:
+        while (time.time() - start) < self.timeout:
             buf.extend(self.waitfor(totlength - len(buf)))
             preamble_ind = buf.find(self.header)
             if preamble_ind == -1:  # not found
@@ -110,14 +127,13 @@ class MTDevice(object):
                     sys.stderr.write("MT: discarding (before preamble).\n")
                 del buf[:preamble_ind]
                 # complete message for checksum
-                buf.extend(self.waitfor(totlength-len(buf)))
+                buf.extend(self.waitfor(totlength - len(buf)))
             if 0xFF & sum(buf[1:]):
                 if self.verbose:
-                    sys.stderr.write("MT: invalid checksum; discarding data and"
-                                     " waiting for next message.\n")
-                del buf[:buf.find(self.header)-2]
+                    sys.stderr.write("MT: invalid checksum; discarding data and" " waiting for next message.\n")
+                del buf[: buf.find(self.header) - 2]
                 continue
-            data = str(buf[-self.length-1:-1])
+            data = str(buf[-self.length - 1 : -1])
             del buf[:]
             return data
         else:
@@ -126,31 +142,36 @@ class MTDevice(object):
     def read_msg(self):
         """Low-level message receiving function."""
         start = time.time()
-        while (time.time()-start) < self.timeout:
+        while (time.time() - start) < self.timeout:
             # first part of preamble
-            if ord(self.waitfor()) != 0xFA:
+            if self.waitfor()[0] != 0xFA:
                 continue
             # second part of preamble
-            if ord(self.waitfor()) != 0xFF:  # we assume no timeout anymore
+            if self.waitfor()[0] != 0xFF:  # we assume no timeout anymore
                 continue
             # read message id and length of message
             mid, length = struct.unpack('!BB', self.waitfor(2))
-            if length == 255:    # extended length
-                length, = struct.unpack('!H', self.waitfor(2))
+            if length == 255:  # extended length
+                (length,) = struct.unpack('!H', self.waitfor(2))
             # read contents and checksum
-            buf = self.waitfor(length+1)
+            buf = self.waitfor(length + 1)
             checksum = buf[-1]
             data = struct.unpack('!%dB' % length, buf[:-1])
             # check message integrity
-            if 0xFF & sum(data, 0xFF+mid+length+checksum):
+            if 0xFF & sum(data, 0xFF + mid + length + checksum):
                 if self.verbose:
-                    sys.stderr.write("invalid checksum; discarding data and "
-                                     "waiting for next message.\n")
+                    sys.stderr.write("invalid checksum; discarding data and " "waiting for next message.\n")
                 continue
             if self.verbose:
-                print ("MT: Got message id 0x%02X (%s) with %d data bytes: [%s]") \
-                    % (mid, getMIDName(mid), length,
-                       ' '.join("%02X" % v for v in data))
+                print(
+                    "MT: Got message id 0x%02X (%s) with %d data bytes: [%s]"
+                    % (
+                        mid,
+                        getMIDName(mid),
+                        length,
+                        ' '.join("%02X" % v for v in data),
+                    )
+                )
             if mid == MID.Error:
                 raise MTErrorMessage(data[0])
             return (mid, buf[:-1])
@@ -160,17 +181,27 @@ class MTDevice(object):
     def write_ack(self, mid, data=b'', n_retries=500):
         """Send a message and read confirmation."""
         self.write_msg(mid, data)
+
+        # If no_ack mode is enabled, skip waiting for acknowledgment
+        if self.no_ack:
+            if self.verbose:
+                print("  No-ACK mode: skipping acknowledgment wait for MID 0x%02X" % mid)
+            # Add a small delay to let the device process the command
+            time.sleep(0.01)
+            return b''  # Return empty data since we didn't read anything
+
+        # Normal ACK waiting behavior
         for _ in range(n_retries):
             mid_ack, data_ack = self.read_msg()
-            if mid_ack == (mid+1):
+            if mid_ack == (mid + 1):
                 break
             elif self.verbose:
-                print ("ack (0x%02X) expected, got 0x%02X instead") % \
-                    (mid+1, mid_ack)
+                print("ack (0x%02X) expected, got 0x%02X instead" % (mid + 1, mid_ack))
         else:
-            raise MTException("Ack (0x%02X) expected, MID 0x%02X received "
-                              "instead (after %d retries)." % (mid+1, mid_ack,
-                                                               n_retries))
+            raise MTException(
+                "Ack (0x%02X) expected, MID 0x%02X received "
+                "instead (after %d retries)." % (mid + 1, mid_ack, n_retries)
+            )
         return data_ack
 
     def _ensure_config_state(self):
@@ -217,19 +248,31 @@ class MTDevice(object):
         """Get the device identifier."""
         self._ensure_config_state()
         data = self.write_ack(MID.ReqDID)
-        deviceID, = struct.unpack('!Q', data)
+        if self.no_ack:
+            if self.verbose:
+                print("  No-ACK mode: cannot read device ID")
+            return 0  # Return dummy value
+        (deviceID,) = struct.unpack('!Q', data)
         return deviceID
 
     def GetProductCode(self):
         """Get the product code."""
         self._ensure_config_state()
         data = self.write_ack(MID.ReqProductCode)
+        if self.no_ack:
+            if self.verbose:
+                print("  No-ACK mode: cannot read product code")
+            return "N/A (no-ack mode)"
         return str(data).strip()
 
     def GetFirmwareRev(self):
         """Get the firmware version."""
         self._ensure_config_state()
         data = self.write_ack(MID.ReqFWRev)
+        if self.no_ack:
+            if self.verbose:
+                print("  No-ACK mode: cannot read firmware revision")
+            return (0, 0, 0)  # Return dummy values
         # XXX unpacking only 3 characters in accordance with the documentation
         # but some devices send 11 bytes instead.
         major, minor, revision = struct.unpack('!BBB', data[:3])
@@ -239,8 +282,7 @@ class MTDevice(object):
         """Run the built-in self test."""
         self._ensure_config_state()
         data = self.write_ack(MID.RunSelfTest)
-        bit_names = ['accX', 'accY', 'accZ', 'gyrX', 'gyrY', 'gyrZ',
-                     'magX', 'magY', 'magZ']
+        bit_names = ['accX', 'accY', 'accZ', 'gyrX', 'gyrY', 'gyrZ', 'magX', 'magY', 'magZ']
         self_test_results = []
         for i, name in enumerate(bit_names):
             self_test_results.append((name, (data >> i) & 1))
@@ -250,6 +292,10 @@ class MTDevice(object):
         """Get the current baudrate id of the device."""
         self._ensure_config_state()
         data = self.write_ack(MID.SetBaudrate)
+        if self.no_ack:
+            if self.verbose:
+                print("  No-ACK mode: cannot read baudrate")
+            return 0  # Return dummy value
         return data[0]
 
     def SetBaudrate(self, brid):
@@ -261,6 +307,10 @@ class MTDevice(object):
     def GetCanConfig(self):
         self._ensure_config_state()
         data = self.write_ack(MID.SetCanConfig)
+        if self.no_ack:
+            if self.verbose:
+                print("  No-ACK mode: cannot read CAN config")
+            return 0, 0  # Return dummy values
         baud = struct.unpack('!I', data)[0]
         return data[0], (baud & 0x0FFF)
 
@@ -278,34 +328,58 @@ class MTDevice(object):
     def GetCanOutputConfig(self):
         self._ensure_config_state()
         data = self.write_ack(MID.SetCanOutputConfig)
+        if self.no_ack:
+            if self.verbose:
+                print("  No-ACK mode: cannot read CAN output config")
+            return b''  # Return empty bytes
         return data
 
     def SetCanOutputConfig(self, output_configuration):
         self._ensure_config_state()
-        data = b''.join(struct.pack('!BBIH', *output) \
-                        for output in output_configuration)
+        data = b''.join(struct.pack('!BBIH', *output) for output in output_configuration)
         self.write_ack(MID.SetCanOutputConfig, data)
 
     def GetGnssPlatform(self):
         self._ensure_config_state()
         data = self.write_ack(MID.SetGnssPlatform)
+        if self.no_ack:
+            if self.verbose:
+                print("  No-ACK mode: cannot read GNSS platform")
+            return b''  # Return empty bytes
         return data
 
     def GetGnssReceiver(self):
         self._ensure_config_state()
         data = self.write_ack(MID.SetGnssReceiver)
+        if self.no_ack:
+            if self.verbose:
+                print("  No-ACK mode: cannot read GNSS receiver")
+            return b''  # Return empty bytes
         return data
 
     def GetHardwareVersion(self):
         self._ensure_config_state()
         data = self.write_ack(MID.SetHardwareVersion)
+        if self.no_ack:
+            if self.verbose:
+                print("  No-ACK mode: cannot read hardware version")
+            return b''  # Return empty bytes
         return data
 
     def GetPortConfig(self):
-        # self._ensure_config_state()
-        data = self.write_msg(MID.SetPortConfig)
-        port_config = [struct.unpack('!BBBB', data[o:o+4])
-                         for o in range(0, len(data), 4)]
+        self._ensure_config_state()
+        data = self.write_ack(MID.SetPortConfig)
+        if self.no_ack:
+            if self.verbose:
+                print("  No-ACK mode: cannot read port config")
+            return 115200, 0, 38400  # Return dummy values (xbus_baud, xbus_flow, rtcm_baud)
+
+        # Initialize default values
+        xbus_baud = 115200
+        xbus_flow = 0
+        rtcm_baud = 38400
+
+        port_config = [struct.unpack('!BBBB', data[o : o + 4]) for o in range(0, len(data), 4)]
         for port in port_config:
             protocol = port[1]
             flowcontrol = port[2]
@@ -323,9 +397,18 @@ class MTDevice(object):
         """Place MT device in configuration mode."""
         self.write_msg(MID.GoToConfig)
         self.state = DeviceState.Config
-        data = struct.pack('!HBBHBBHBB', MID.XbuxInterface, int(xbus_flow), xbus_brid, \
-                                        0x00, 0x00, 0x00, \
-                                        MID.RtcmInterface, 0x00, rtcm_brid)
+        data = struct.pack(
+            '!HBBHBBHBB',
+            MID.XbuxInterface,
+            int(xbus_flow),
+            xbus_brid,
+            0x00,
+            0x00,
+            0x00,
+            MID.RtcmInterface,
+            0x00,
+            rtcm_brid,
+        )
         self.write_msg(MID.SetPortConfig, data)
         return None
 
@@ -333,7 +416,11 @@ class MTDevice(object):
         """Get the current error mode of the device."""
         self._ensure_config_state()
         data = self.write_ack(MID.SetErrorMode)
-        error_mode, = struct.unpack('!H', data)
+        if self.no_ack:
+            if self.verbose:
+                print("  No-ACK mode: cannot read error mode")
+            return 0  # Return dummy value
+        (error_mode,) = struct.unpack('!H', data)
         return error_mode
 
     def SetErrorMode(self, error_mode):
@@ -357,6 +444,10 @@ class MTDevice(object):
         """Get the option flags (MTi-1 series)."""
         self._ensure_config_state()
         data = self.write_ack(MID.SetOptionFlags)
+        if self.no_ack:
+            if self.verbose:
+                print("  No-ACK mode: cannot read option flags")
+            return (0,)  # Return dummy tuple
         set_flags = struct.unpack('!I', data)
         return set_flags
 
@@ -370,7 +461,11 @@ class MTDevice(object):
         """Get the location ID of the device."""
         self._ensure_config_state()
         data = self.write_ack(MID.SetLocationID)
-        location_id, = struct.unpack('!H', data)
+        if self.no_ack:
+            if self.verbose:
+                print("  No-ACK mode: cannot read location ID")
+            return 0  # Return dummy value
+        (location_id,) = struct.unpack('!H', data)
         return location_id
 
     def SetLocationID(self, location_id):
@@ -380,8 +475,7 @@ class MTDevice(object):
         self.write_ack(MID.SetLocationID, data)
 
     def RestoreFactoryDefaults(self):
-        """Restore MT device configuration to factory defaults (soft version).
-        """
+        """Restore MT device configuration to factory defaults (soft version)."""
         self._ensure_config_state()
         self.write_ack(MID.RestoreFactoryDef)
 
@@ -389,7 +483,11 @@ class MTDevice(object):
         """Get the transmission delay (only RS485)."""
         self._ensure_config_state()
         data = self.write_ack(MID.SetTransmitDelay)
-        transmit_delay, = struct.unpack('!H', data)
+        if self.no_ack:
+            if self.verbose:
+                print("  No-ACK mode: cannot read transmit delay")
+            return 0  # Return dummy value
+        (transmit_delay,) = struct.unpack('!H', data)
         return transmit_delay
 
     def SetTransmitDelay(self, transmit_delay):
@@ -402,66 +500,91 @@ class MTDevice(object):
         """Get the synchronisation settings."""
         self._ensure_config_state()
         data = self.write_ack(MID.SetSyncSettings)
-        sync_settings = [struct.unpack('!BBBBHHHH', data[o:o+12])
-                         for o in range(0, len(data), 12)]
+        if self.no_ack:
+            if self.verbose:
+                print("  No-ACK mode: cannot read sync settings")
+            return []  # Return empty list
+        sync_settings = [struct.unpack('!BBBBHHHH', data[o : o + 12]) for o in range(0, len(data), 12)]
         return sync_settings
 
     def SetSyncSettings(self, sync_settings):
         """Set the synchronisation settings (mark IV)"""
         self._ensure_config_state()
-        data = b''.join(struct.pack('!BBBBHHHH', *sync_setting)
-                        for sync_setting in sync_settings)
+        data = b''.join(struct.pack('!BBBBHHHH', *sync_setting) for sync_setting in sync_settings)
         self.write_ack(MID.SetSyncSettings, data)
 
     def GetConfiguration(self):
         """Ask for the current configuration of the MT device."""
         self._ensure_config_state()
         config = self.write_ack(MID.ReqConfiguration)
+        if self.no_ack:
+            if self.verbose:
+                print("  No-ACK mode: cannot read configuration")
+            return {
+                'output-mode': 0,
+                'output-settings': 0,
+                'length': 0,
+                'period': 0,
+                'skipfactor': 0,
+                'Master device ID': 0,
+                'date': b'',
+                'time': b'',
+                'number of devices': 0,
+                'device ID': 0,
+            }
         try:
-            masterID, period, skipfactor, _, _, _, date, time, num, deviceID,\
-                length, mode, settings =\
-                struct.unpack('!IHHHHI8s8s32x32xHIHHI8x', config)
+            masterID, period, skipfactor, _, _, _, date, time, num, deviceID, length, mode, settings = struct.unpack(
+                '!IHHHHI8s8s32x32xHIHHI8x', config
+            )
         except struct.error:
             raise MTException("could not parse configuration.")
         self.mode = mode
         self.settings = settings
         self.length = length
         if self.length <= 254:
-            self.header = b'\xFA\xFF\x32' + struct.pack('!B', self.length)
+            self.header = b'\xfa\xff\x32' + struct.pack('!B', self.length)
         else:
-            self.header = b'\xFA\xFF\x32\xFF' + struct.pack('!H', self.length)
-        conf = {'output-mode': mode,
-                'output-settings': settings,
-                'length': length,
-                'period': period,
-                'skipfactor': skipfactor,
-                'Master device ID': masterID,
-                'date': date,
-                'time': time,
-                'number of devices': num,
-                'device ID': deviceID}
+            self.header = b'\xfa\xff\x32\xff' + struct.pack('!H', self.length)
+        conf = {
+            'output-mode': mode,
+            'output-settings': settings,
+            'length': length,
+            'period': period,
+            'skipfactor': skipfactor,
+            'Master device ID': masterID,
+            'date': date,
+            'time': time,
+            'number of devices': num,
+            'device ID': deviceID,
+        }
         return conf
 
     def GetOutputConfiguration(self):
         """Get the output configuration of the device (mark IV)."""
         self._ensure_config_state()
         data = self.write_ack(MID.SetOutputConfiguration)
-        output_configuration = [struct.unpack('!HH', data[o:o+4])
-                                for o in range(0, len(data), 4)]
+        if self.no_ack:
+            if self.verbose:
+                print("  No-ACK mode: cannot read output configuration")
+            return []  # Return empty list
+        output_configuration = [struct.unpack('!HH', data[o : o + 4]) for o in range(0, len(data), 4)]
         return output_configuration
 
     def SetOutputConfiguration(self, output_configuration):
         """Set the output configuration of the device (mark IV)."""
         self._ensure_config_state()
-        data = b''.join(struct.pack('!HH', *output)
-                        for output in output_configuration)
+        data = b''.join(struct.pack('!HH', *output) for output in output_configuration)
         self.write_ack(MID.SetOutputConfiguration, data)
 
     def GetStringOutputType(self):
         """Get the NMEA data output configuration."""
         self._ensure_config_state()
         data = self.write_ack(MID.SetStringOutputType)
-        string_output_type, = struct.unpack('!H', data[-2:])
+        if self.no_ack:
+            if self.verbose:
+                print("  No-ACK mode: cannot read string output type")
+            return 0  # Return dummy value
+        (string_output_type,) = struct.unpack('!H', data[-2:])
         return string_output_type
 
     def SetStringOutputType(self, string_output_type):
@@ -474,7 +597,11 @@ class MTDevice(object):
         """Get the sampling period."""
         self._ensure_config_state()
         data = self.write_ack(MID.SetPeriod)
-        period, = struct.unpack('!H', data)
+        if self.no_ack:
+            if self.verbose:
+                print("  No-ACK mode: cannot read period")
+            return 0  # Return dummy value
+        (period,) = struct.unpack('!H', data)
         return period
 
     def SetPeriod(self, period):
@@ -493,6 +620,10 @@ class MTDevice(object):
         self._ensure_config_state()
         data = struct.pack('!B', parameter)
         data = self.write_ack(MID.SetAlignmentRotation, data)
+        if self.no_ack:
+            if self.verbose:
+                print("  No-ACK mode: cannot read alignment rotation")
+            return 0, 0.0, 0.0, 0.0, 0.0  # Return dummy values
         frame, q0, q1, q2, q3 = struct.unpack('!Bffff', data)
         return frame, q0, q1, q2, q3
 
@@ -511,7 +642,11 @@ class MTDevice(object):
         """Get current output mode."""
         self._ensure_config_state()
         data = self.write_ack(MID.SetOutputMode)
-        self.mode, = struct.unpack('!H', data)
+        if self.no_ack:
+            if self.verbose:
+                print("  No-ACK mode: cannot read output mode")
+            return 0  # Return dummy value
+        (self.mode,) = struct.unpack('!H', data)
         return self.mode
 
     def SetOutputMode(self, mode):
@@ -525,7 +660,11 @@ class MTDevice(object):
         """Get current extended output mode (for alternative UART)."""
         self._ensure_config_state()
         data = self.write_ack(MID.SetExtOutputMode)
-        ext_mode, = struct.unpack('!H', data)
+        if self.no_ack:
+            if self.verbose:
+                print("  No-ACK mode: cannot read extended output mode")
+            return 0  # Return dummy value
+        (ext_mode,) = struct.unpack('!H', data)
         return ext_mode
 
     def SetExtOutputMode(self, ext_mode):
@@ -538,7 +677,11 @@ class MTDevice(object):
         """Get current output mode."""
         self._ensure_config_state()
         data = self.write_ack(MID.SetOutputSettings)
-        self.settings, = struct.unpack('!I', data)
+        if self.no_ack:
+            if self.verbose:
+                print("  No-ACK mode: cannot read output settings")
+            return 0  # Return dummy value
+        (self.settings,) = struct.unpack('!I', data)
         return self.settings
 
     # def SetOutputSettingsTEMP(self, settings):
@@ -548,7 +691,6 @@ class MTDevice(object):
     #         1,0,0,0)
     #     self.write_ack(MID.SetOutputSettings, data)
     #     self.settings = settings
-
 
     def SetOutputSettings(self, settings):
         """Select how to output the information."""
@@ -570,15 +712,14 @@ class MTDevice(object):
             data = self.write_ack(DeprecatedMID.ReqDataLength)
         except MTErrorMessage as e:
             if e.code == 0x04:
-                sys.stderr.write("ReqDataLength message is deprecated and not "
-                                 "recognised by your device.")
+                sys.stderr.write("ReqDataLength message is deprecated and not " "recognised by your device.")
                 return
             raise e
-        self.length, = struct.unpack('!H', data)
+        (self.length,) = struct.unpack('!H', data)
         if self.length <= 254:
-            self.header = b'\xFA\xFF\x32' + struct.pack('!B', self.length)
+            self.header = b'\xfa\xff\x32' + struct.pack('!B', self.length)
         else:
-            self.header = b'\xFA\xFF\x32\xFF' + struct.pack('!H', self.length)
+            self.header = b'\xfa\xff\x32\xff' + struct.pack('!H', self.length)
         return self.length
 
     def GetLatLonAlt(self):
@@ -587,13 +728,16 @@ class MTDevice(object):
         """
         self._ensure_config_state()
         data = self.write_ack(MID.SetLatLonAlt)
+        if self.no_ack:
+            if self.verbose:
+                print("  No-ACK mode: cannot read lat/lon/alt")
+            return (0.0, 0.0, 0.0)  # Return dummy values
         if len(data) == 24:
             lat, lon, alt = struct.unpack('!ddd', data)
         elif len(data) == 12:
             lat, lon, alt = struct.unpack('!fff', data)
         else:
-            raise MTException('Could not parse ReqLatLonAltAck message: wrong'
-                              'size of message.')
+            raise MTException('Could not parse ReqLatLonAltAck message: wrong' 'size of message.')
         return (lat, lon, alt)
 
     def SetLatLonAlt(self, lat, lon, alt):
@@ -608,11 +752,14 @@ class MTDevice(object):
         """Get the available XKF scenarios on the device."""
         self._ensure_config_state()
         data = self.write_ack(MID.ReqAvailableScenarios)
+        if self.no_ack:
+            if self.verbose:
+                print("  No-ACK mode: cannot read available scenarios")
+            return []  # Return empty list
         scenarios = []
         try:
-            for i in range(len(data)/22):
-                scenario_type, version, label =\
-                    struct.unpack('!BB20s', data[22*i:22*(i+1)])
+            for i in range(len(data) // 22):
+                scenario_type, version, label = struct.unpack('!BB20s', data[22 * i : 22 * (i + 1)])
                 scenarios.append((scenario_type, version, label.strip()))
             # available XKF scenarios
             self.scenarios = scenarios
@@ -624,6 +771,10 @@ class MTDevice(object):
         """Get the ID of the currently used XKF scenario."""
         self._ensure_config_state()
         data = self.write_ack(MID.SetCurrentScenario)
+        if self.no_ack:
+            if self.verbose:
+                print("  No-ACK mode: cannot read current scenario")
+            return 0  # Return dummy value
         _, self.scenario_id = struct.unpack('!BB', data[:2])  # version, id
         return self.scenario_id
 
@@ -654,15 +805,19 @@ class MTDevice(object):
         """Get UTC time from device."""
         self._ensure_config_state()
         data = self.write_ack(MID.SetUTCTime)
-        ns, year, month, day, hour, minute, second, flag = \
-            struct.unpack('!IHBBBBBB', data)
+        if self.no_ack:
+            if self.verbose:
+                print("  No-ACK mode: cannot read UTC time")
+            return (0, 0, 0, 0, 0, 0, 0, 0)  # Return dummy values
+        ns, year, month, day, hour, minute, second, flag = struct.unpack('!IHBBBBBB', data)
         return (ns, year, month, day, hour, minute, second, flag)
 
     def SetUTCTime(self, ns, year, month, day, hour, minute, second, flag):
         """Set UTC time on the device."""
         self._ensure_config_state()
-        data = struct.pack('!IHBBBBBB', ns, year, month, day, hour, minute,
-                           second, flag)  # no clue what setting flag can mean
+        data = struct.pack(
+            '!IHBBBBBB', ns, year, month, day, hour, minute, second, flag
+        )  # no clue what setting flag can mean
         self.write_ack(MID.SetUTCTime, data)
 
     def AdjustUTCTime(self, ticks):
@@ -687,7 +842,7 @@ class MTDevice(object):
                 raise
         except MTException as e:
             if self.verbose:
-                print ("no ack received while switching from MTData2 to MTData: %s" % e)
+                print("no ack received while switching from MTData2 to MTData: %s" % e)
             pass  # no ack???
         self.SetOutputMode(mode)
         self.SetOutputSettings(settings)
@@ -712,15 +867,14 @@ class MTDevice(object):
         elif mid == MID.MTData2:
             return self.parse_MTData2(data)
         else:
-            raise MTException("unknown data message: mid=0x%02X (%s)." %
-                              (mid, getMIDName(mid)))
+            raise MTException("unknown data message: mid=0x%02X (%s)." % (mid, getMIDName(mid)))
 
     def parse_MTData2(self, data):
         # Functions to parse each type of packet
         def parse_temperature(data_id, content, ffmt):
             o = {}
             if (data_id & 0x00F0) == 0x10:  # Temperature
-                o['Temp'], = struct.unpack('!'+ffmt, content)
+                (o['Temp'],) = struct.unpack('!' + ffmt, content)
             else:
                 raise MTException("unknown packet: 0x%04X." % data_id)
             return o
@@ -728,21 +882,21 @@ class MTDevice(object):
         def parse_timestamp(data_id, content, ffmt):
             o = {}
             if (data_id & 0x00F0) == 0x10:  # UTC Time
-                o['ns'], o['Year'], o['Month'], o['Day'], o['Hour'],\
-                    o['Minute'], o['Second'], o['Flags'] =\
+                o['ns'], o['Year'], o['Month'], o['Day'], o['Hour'], o['Minute'], o['Second'], o['Flags'] = (
                     struct.unpack('!LHBBBBBB', content)
+                )
             elif (data_id & 0x00F0) == 0x20:  # Packet Counter
-                o['PacketCounter'], = struct.unpack('!H', content)
+                (o['PacketCounter'],) = struct.unpack('!H', content)
             elif (data_id & 0x00F0) == 0x30:  # Integer Time of Week
-                o['TimeOfWeek'], = struct.unpack('!L', content)
+                (o['TimeOfWeek'],) = struct.unpack('!L', content)
             elif (data_id & 0x00F0) == 0x40:  # GPS Age  # deprecated
-                o['gpsAge'], = struct.unpack('!B', content)
+                (o['gpsAge'],) = struct.unpack('!B', content)
             elif (data_id & 0x00F0) == 0x50:  # Pressure Age  # deprecated
-                o['pressureAge'], = struct.unpack('!B', content)
+                (o['pressureAge'],) = struct.unpack('!B', content)
             elif (data_id & 0x00F0) == 0x60:  # Sample Time Fine
-                o['SampleTimeFine'], = struct.unpack('!L', content)
+                (o['SampleTimeFine'],) = struct.unpack('!L', content)
             elif (data_id & 0x00F0) == 0x70:  # Sample Time Coarse
-                o['SampleTimeCoarse'], = struct.unpack('!L', content)
+                (o['SampleTimeCoarse'],) = struct.unpack('!L', content)
             elif (data_id & 0x00F0) == 0x80:  # Frame Range
                 o['startFrame'], o['endFrame'] = struct.unpack('!HH', content)
             else:
@@ -758,14 +912,13 @@ class MTDevice(object):
             elif (data_id & 0x000C) == 0x08:  # NWU
                 o['frame'] = 'NWU'
             if (data_id & 0x00F0) == 0x10:  # Quaternion
-                o['Q0'], o['Q1'], o['Q2'], o['Q3'] = struct.unpack('!'+4*ffmt,
-                                                                   content)
+                o['Q0'], o['Q1'], o['Q2'], o['Q3'] = struct.unpack('!' + 4 * ffmt, content)
             elif (data_id & 0x00F0) == 0x20:  # Rotation Matrix
-                o['a'], o['b'], o['c'], o['d'], o['e'], o['f'], o['g'], o['h'],\
-                    o['i'] = struct.unpack('!'+9*ffmt, content)
+                o['a'], o['b'], o['c'], o['d'], o['e'], o['f'], o['g'], o['h'], o['i'] = struct.unpack(
+                    '!' + 9 * ffmt, content
+                )
             elif (data_id & 0x00F0) == 0x30:  # Euler Angles
-                o['Roll'], o['Pitch'], o['Yaw'] = struct.unpack('!'+3*ffmt,
-                                                                content)
+                o['Roll'], o['Pitch'], o['Yaw'] = struct.unpack('!' + 3 * ffmt, content)
             else:
                 raise MTException("unknown packet: 0x%04X." % data_id)
             return o
@@ -773,7 +926,7 @@ class MTDevice(object):
         def parse_pressure(data_id, content, ffmt):
             o = {}
             if (data_id & 0x00F0) == 0x10:  # Baro pressure
-                o['Pressure'], = struct.unpack('!L', content)
+                (o['Pressure'],) = struct.unpack('!L', content)
             else:
                 raise MTException("unknown packet: 0x%04X." % data_id)
             return o
@@ -787,17 +940,13 @@ class MTDevice(object):
             elif (data_id & 0x000C) == 0x08:  # NWU
                 o['frame'] = 'NWU'
             if (data_id & 0x00F0) == 0x10:  # Delta V
-                o['Delta v.x'], o['Delta v.y'], o['Delta v.z'] = \
-                    struct.unpack('!'+3*ffmt, content)
+                o['Delta v.x'], o['Delta v.y'], o['Delta v.z'] = struct.unpack('!' + 3 * ffmt, content)
             elif (data_id & 0x00F0) == 0x20:  # Acceleration
-                o['accX'], o['accY'], o['accZ'] = \
-                    struct.unpack('!'+3*ffmt, content)
+                o['accX'], o['accY'], o['accZ'] = struct.unpack('!' + 3 * ffmt, content)
             elif (data_id & 0x00F0) == 0x30:  # Free Acceleration
-                o['freeAccX'], o['freeAccY'], o['freeAccZ'] = \
-                    struct.unpack('!'+3*ffmt, content)
+                o['freeAccX'], o['freeAccY'], o['freeAccZ'] = struct.unpack('!' + 3 * ffmt, content)
             elif (data_id & 0x00F0) == 0x40:  # AccelerationHR
-                o['accX'], o['accY'], o['accZ'] = \
-                    struct.unpack('!'+3*ffmt, content)
+                o['accX'], o['accY'], o['accZ'] = struct.unpack('!' + 3 * ffmt, content)
             else:
                 raise MTException("unknown packet: 0x%04X." % data_id)
             return o
@@ -811,14 +960,13 @@ class MTDevice(object):
             elif (data_id & 0x000C) == 0x08:  # NWU
                 o['frame'] = 'NWU'
             if (data_id & 0x00F0) == 0x10:  # Altitude MSL  # deprecated
-                o['altMsl'], = struct.unpack('!'+ffmt, content)
+                (o['altMsl'],) = struct.unpack('!' + ffmt, content)
             elif (data_id & 0x00F0) == 0x20:  # Altitude Ellipsoid
-                o['altEllipsoid'], = struct.unpack('!'+ffmt, content)
+                (o['altEllipsoid'],) = struct.unpack('!' + ffmt, content)
             elif (data_id & 0x00F0) == 0x30:  # Position ECEF
-                o['ecefX'], o['ecefY'], o['ecefZ'] = \
-                    struct.unpack('!'+3*ffmt, content)
+                o['ecefX'], o['ecefY'], o['ecefZ'] = struct.unpack('!' + 3 * ffmt, content)
             elif (data_id & 0x00F0) == 0x40:  # LatLon
-                o['lat'], o['lon'] = struct.unpack('!'+2*ffmt, content)
+                o['lat'], o['lon'] = struct.unpack('!' + 2 * ffmt, content)
             else:
                 raise MTException("unknown packet: 0x%04X." % data_id)
             return o
@@ -826,15 +974,42 @@ class MTDevice(object):
         def parse_GNSS(data_id, content, ffmt):
             o = {}
             if (data_id & 0x00F0) == 0x10:  # GNSS PVT data
-                o['itow'], o['year'], o['month'], o['day'], o['hour'],\
-                    o['min'], o['sec'], o['valid'], o['tAcc'], o['nano'],\
-                    o['fixtype'], o['flags'], o['numSV'], o['lon'], o['lat'],\
-                    o['height'], o['hMSL'], o['hAcc'], o['vAcc'], o['velN'],\
-                    o['velE'], o['velD'], o['gSpeed'], o['headMot'], o['sAcc'],\
-                    o['headAcc'], o['headVeh'], o['gdop'], o['pdop'],\
-                    o['tdop'], o['vdop'], o['hdop'], o['ndop'], o['edop'] = \
-                    struct.unpack('!IHBBBBBBIiBBBBiiiiIIiiiiiIIiHHHHHHH',
-                                  content)
+                (
+                    o['itow'],
+                    o['year'],
+                    o['month'],
+                    o['day'],
+                    o['hour'],
+                    o['min'],
+                    o['sec'],
+                    o['valid'],
+                    o['tAcc'],
+                    o['nano'],
+                    o['fixtype'],
+                    o['flags'],
+                    o['numSV'],
+                    o['lon'],
+                    o['lat'],
+                    o['height'],
+                    o['hMSL'],
+                    o['hAcc'],
+                    o['vAcc'],
+                    o['velN'],
+                    o['velE'],
+                    o['velD'],
+                    o['gSpeed'],
+                    o['headMot'],
+                    o['sAcc'],
+                    o['headAcc'],
+                    o['headVeh'],
+                    o['gdop'],
+                    o['pdop'],
+                    o['tdop'],
+                    o['vdop'],
+                    o['hdop'],
+                    o['ndop'],
+                    o['edop'],
+                ) = struct.unpack('!IHBBBBBBIiBBBBiiiiIIiiiiiIIiHHHHHHH', content)
                 # scaling correction
                 o['lon'] *= 1e-7
                 o['lat'] *= 1e-7
@@ -852,8 +1027,9 @@ class MTDevice(object):
                 svs = []
                 ch = {}
                 for i in range(o['numSvs']):
-                    ch['gnssId'], ch['svId'], ch['cno'], ch['flags'] = \
-                        struct.unpack('!BBBB', content[8+4*i:12+4*i])
+                    ch['gnssId'], ch['svId'], ch['cno'], ch['flags'] = struct.unpack(
+                        '!BBBB', content[8 + 4 * i : 12 + 4 * i]
+                    )
                     svs.append(ch)
                 o['svs'] = svs
             else:
@@ -869,14 +1045,11 @@ class MTDevice(object):
             elif (data_id & 0x000C) == 0x08:  # NWU
                 o['frame'] = 'NWU'
             if (data_id & 0x00F0) == 0x20:  # Rate of Turn
-                o['gyrX'], o['gyrY'], o['gyrZ'] = \
-                    struct.unpack('!'+3*ffmt, content)
+                o['gyrX'], o['gyrY'], o['gyrZ'] = struct.unpack('!' + 3 * ffmt, content)
             elif (data_id & 0x00F0) == 0x30:  # Delta Q
-                o['Delta q0'], o['Delta q1'], o['Delta q2'], o['Delta q3'] = \
-                    struct.unpack('!'+4*ffmt, content)
+                o['Delta q0'], o['Delta q1'], o['Delta q2'], o['Delta q3'] = struct.unpack('!' + 4 * ffmt, content)
             elif (data_id & 0x00F0) == 0x40:  # RateOfTurnHR
-                o['gyrX'], o['gyrY'], o['gyrZ'] = \
-                    struct.unpack('!'+3*ffmt, content)
+                o['gyrX'], o['gyrY'], o['gyrZ'] = struct.unpack('!' + 3 * ffmt, content)
             else:
                 raise MTException("unknown packet: 0x%04X." % data_id)
             return o
@@ -884,31 +1057,64 @@ class MTDevice(object):
         def parse_GPS(data_id, content, ffmt):
             o = {}
             if (data_id & 0x00F0) == 0x30:  # DOP
-                o['iTOW'], g, p, t, v, h, n, e = \
-                    struct.unpack('!LHHHHHHH', content)
-                o['gDOP'], o['pDOP'], o['tDOP'], o['vDOP'], o['hDOP'], \
-                    o['nDOP'], o['eDOP'] = 0.01*g, 0.01*p, 0.01*t, \
-                    0.01*v, 0.01*h, 0.01*n, 0.01*e
+                o['iTOW'], g, p, t, v, h, n, e = struct.unpack('!LHHHHHHH', content)
+                o['gDOP'], o['pDOP'], o['tDOP'], o['vDOP'], o['hDOP'], o['nDOP'], o['eDOP'] = (
+                    0.01 * g,
+                    0.01 * p,
+                    0.01 * t,
+                    0.01 * v,
+                    0.01 * h,
+                    0.01 * n,
+                    0.01 * e,
+                )
             elif (data_id & 0x00F0) == 0x40:  # SOL
-                o['iTOW'], o['fTOW'], o['Week'], o['gpsFix'], o['Flags'], \
-                    o['ecefX'], o['ecefY'], o['ecefZ'], o['pAcc'], \
-                    o['ecefVX'], o['ecefVY'], o['ecefVZ'], o['sAcc'], \
-                    o['pDOP'], o['numSV'] = \
-                    struct.unpack('!LlhBBlllLlllLHxBx', content)
+                (
+                    o['iTOW'],
+                    o['fTOW'],
+                    o['Week'],
+                    o['gpsFix'],
+                    o['Flags'],
+                    o['ecefX'],
+                    o['ecefY'],
+                    o['ecefZ'],
+                    o['pAcc'],
+                    o['ecefVX'],
+                    o['ecefVY'],
+                    o['ecefVZ'],
+                    o['sAcc'],
+                    o['pDOP'],
+                    o['numSV'],
+                ) = struct.unpack('!LlhBBlllLlllLHxBx', content)
                 # scaling correction
                 o['pDOP'] *= 0.01
             elif (data_id & 0x00F0) == 0x80:  # Time UTC
-                o['iTOW'], o['tAcc'], o['nano'], o['year'], o['month'], \
-                    o['day'], o['hour'], o['min'], o['sec'], o['valid'] = \
-                    struct.unpack('!LLlHBBBBBB', content)
+                (
+                    o['iTOW'],
+                    o['tAcc'],
+                    o['nano'],
+                    o['year'],
+                    o['month'],
+                    o['day'],
+                    o['hour'],
+                    o['min'],
+                    o['sec'],
+                    o['valid'],
+                ) = struct.unpack('!LLlHBBBBBB', content)
             elif (data_id & 0x00F0) == 0xA0:  # SV Info
                 o['iTOW'], o['numCh'] = struct.unpack('!LBxxx', content[:8])
                 channels = []
                 ch = {}
                 for i in range(o['numCh']):
-                    ch['chn'], ch['svid'], ch['flags'], ch['quality'], \
-                        ch['cno'], ch['elev'], ch['azim'], ch['prRes'] = \
-                        struct.unpack('!BBBBBbhl', content[8+12*i:20+12*i])
+                    (
+                        ch['chn'],
+                        ch['svid'],
+                        ch['flags'],
+                        ch['quality'],
+                        ch['cno'],
+                        ch['elev'],
+                        ch['azim'],
+                        ch['prRes'],
+                    ) = struct.unpack('!BBBBBbhl', content[8 + 12 * i : 20 + 12 * i])
                     channels.append(ch)
                 o['channels'] = channels
             else:
@@ -918,12 +1124,20 @@ class MTDevice(object):
         def parse_SCR(data_id, content, ffmt):
             o = {}
             if (data_id & 0x00F0) == 0x10:  # ACC+GYR+MAG+Temperature
-                o['accX'], o['accY'], o['accZ'], o['gyrX'], o['gyrY'], \
-                    o['gyrZ'], o['magX'], o['magY'], o['magZ'], o['Temp'] = \
-                    struct.unpack("!9Hh", content)
+                (
+                    o['accX'],
+                    o['accY'],
+                    o['accZ'],
+                    o['gyrX'],
+                    o['gyrY'],
+                    o['gyrZ'],
+                    o['magX'],
+                    o['magY'],
+                    o['magZ'],
+                    o['Temp'],
+                ) = struct.unpack("!9Hh", content)
             elif (data_id & 0x00F0) == 0x20:  # Gyro Temperature
-                o['tempGyrX'], o['tempGyrY'], o['tempGyrZ'] = \
-                    struct.unpack("!hhh", content)
+                o['tempGyrX'], o['tempGyrY'], o['tempGyrZ'] = struct.unpack("!hhh", content)
             else:
                 raise MTException("unknown packet: 0x%04X." % data_id)
             return o
@@ -931,9 +1145,9 @@ class MTDevice(object):
         def parse_analog_in(data_id, content, ffmt):  # deprecated
             o = {}
             if (data_id & 0x00F0) == 0x10:  # Analog In 1
-                o['analogIn1'], = struct.unpack("!H", content)
+                (o['analogIn1'],) = struct.unpack("!H", content)
             elif (data_id & 0x00F0) == 0x20:  # Analog In 2
-                o['analogIn2'], = struct.unpack("!H", content)
+                (o['analogIn2'],) = struct.unpack("!H", content)
             else:
                 raise MTException("unknown packet: 0x%04X." % data_id)
             return o
@@ -947,8 +1161,7 @@ class MTDevice(object):
             elif (data_id & 0x000C) == 0x08:  # NWU
                 o['frame'] = 'NWU'
             if (data_id & 0x00F0) == 0x20:  # Magnetic Field
-                o['magX'], o['magY'], o['magZ'] = \
-                    struct.unpack("!3"+ffmt, content)
+                o['magX'], o['magY'], o['magZ'] = struct.unpack("!3" + ffmt, content)
             else:
                 raise MTException("unknown packet: 0x%04X." % data_id)
             return o
@@ -962,8 +1175,7 @@ class MTDevice(object):
             elif (data_id & 0x000C) == 0x08:  # NWU
                 o['frame'] = 'NWU'
             if (data_id & 0x00F0) == 0x10:  # Velocity XYZ
-                o['velX'], o['velY'], o['velZ'] = \
-                    struct.unpack("!3"+ffmt, content)
+                o['velX'], o['velY'], o['velZ'] = struct.unpack("!3" + ffmt, content)
             else:
                 raise MTException("unknown packet: 0x%04X." % data_id)
             return o
@@ -971,11 +1183,11 @@ class MTDevice(object):
         def parse_status(data_id, content, ffmt):
             o = {}
             if (data_id & 0x00F0) == 0x10:  # Status Byte
-                o['StatusByte'], = struct.unpack("!B", content)
+                (o['StatusByte'],) = struct.unpack("!B", content)
             elif (data_id & 0x00F0) == 0x20:  # Status Word
-                o['StatusWord'], = struct.unpack("!L", content)
+                (o['StatusWord'],) = struct.unpack("!L", content)
             elif (data_id & 0x00F0) == 0x40:  # RSSI  # deprecated
-                o['RSSI'], = struct.unpack("!b", content)
+                (o['RSSI'],) = struct.unpack("!b", content)
             else:
                 raise MTException("unknown packet: 0x%04X." % data_id)
             return o
@@ -991,52 +1203,38 @@ class MTDevice(object):
                     float_format = 'f'
                 else:
                     raise MTException("fixed point precision not supported.")
-                content = data[3:3+size]
-                data = data[3+size:]
+                content = data[3 : 3 + size]
+                data = data[3 + size :]
                 group = data_id & 0xF800
                 ffmt = float_format
                 if group == XDIGroup.Temperature:
-                    output.setdefault('Temperature', {}).update(
-                        parse_temperature(data_id, content, ffmt))
+                    output.setdefault('Temperature', {}).update(parse_temperature(data_id, content, ffmt))
                 elif group == XDIGroup.Timestamp:
-                    output.setdefault('Timestamp', {}).update(
-                        parse_timestamp(data_id, content, ffmt))
+                    output.setdefault('Timestamp', {}).update(parse_timestamp(data_id, content, ffmt))
                 elif group == XDIGroup.OrientationData:
-                    output.setdefault('Orientation Data', {}).update(
-                        parse_orientation_data(data_id, content, ffmt))
+                    output.setdefault('Orientation Data', {}).update(parse_orientation_data(data_id, content, ffmt))
                 elif group == XDIGroup.Pressure:
-                    output.setdefault('Pressure', {}).update(
-                        parse_pressure(data_id, content, ffmt))
+                    output.setdefault('Pressure', {}).update(parse_pressure(data_id, content, ffmt))
                 elif group == XDIGroup.Acceleration:
-                    output.setdefault('Acceleration', {}).update(
-                        parse_acceleration(data_id, content, ffmt))
+                    output.setdefault('Acceleration', {}).update(parse_acceleration(data_id, content, ffmt))
                 elif group == XDIGroup.Position:
-                    output.setdefault('Position', {}).update(
-                        parse_position(data_id, content, ffmt))
+                    output.setdefault('Position', {}).update(parse_position(data_id, content, ffmt))
                 elif group == XDIGroup.GNSS:
-                    output.setdefault('GNSS', {}).update(
-                        parse_GNSS(data_id, content, ffmt))
+                    output.setdefault('GNSS', {}).update(parse_GNSS(data_id, content, ffmt))
                 elif group == XDIGroup.AngularVelocity:
-                    output.setdefault('Angular Velocity', {}).update(
-                        parse_angular_velocity(data_id, content, ffmt))
+                    output.setdefault('Angular Velocity', {}).update(parse_angular_velocity(data_id, content, ffmt))
                 elif group == XDIGroup.GPS:
-                    output.setdefault('GPS', {}).update(
-                        parse_GPS(data_id, content, ffmt))
+                    output.setdefault('GPS', {}).update(parse_GPS(data_id, content, ffmt))
                 elif group == XDIGroup.SensorComponentReadout:
-                    output.setdefault('SCR', {}).update(
-                        parse_SCR(data_id, content, ffmt))
+                    output.setdefault('SCR', {}).update(parse_SCR(data_id, content, ffmt))
                 elif group == XDIGroup.AnalogIn:  # deprecated
-                    output.setdefault('Analog In', {}).update(
-                        parse_analog_in(data_id, content, ffmt))
+                    output.setdefault('Analog In', {}).update(parse_analog_in(data_id, content, ffmt))
                 elif group == XDIGroup.Magnetic:
-                    output.setdefault('Magnetic', {}).update(
-                        parse_magnetic(data_id, content, ffmt))
+                    output.setdefault('Magnetic', {}).update(parse_magnetic(data_id, content, ffmt))
                 elif group == XDIGroup.Velocity:
-                    output.setdefault('Velocity', {}).update(
-                        parse_velocity(data_id, content, ffmt))
+                    output.setdefault('Velocity', {}).update(parse_velocity(data_id, content, ffmt))
                 elif group == XDIGroup.Status:
-                    output.setdefault('Status', {}).update(
-                        parse_status(data_id, content, ffmt))
+                    output.setdefault('Status', {}).update(parse_status(data_id, content, ffmt))
                 else:
                     raise MTException("unknown XDI group: 0x%04X." % group)
             except struct.error:
@@ -1056,58 +1254,74 @@ class MTDevice(object):
             # raw IMU first
             if mode & OutputMode.RAW:
                 o = {}
-                o['accX'], o['accY'], o['accZ'], o['gyrX'], o['gyrY'], \
-                    o['gyrZ'], o['magX'], o['magY'], o['magZ'], o['temp'] =\
-                    struct.unpack('!10H', data[:20])
+                (
+                    o['accX'],
+                    o['accY'],
+                    o['accZ'],
+                    o['gyrX'],
+                    o['gyrY'],
+                    o['gyrZ'],
+                    o['magX'],
+                    o['magY'],
+                    o['magZ'],
+                    o['temp'],
+                ) = struct.unpack('!10H', data[:20])
                 data = data[20:]
                 output['RAW'] = o
             # raw GPS second
             if mode & OutputMode.RAWGPS:
                 o = {}
-                o['Press'], o['bPrs'], o['ITOW'], o['LAT'], o['LON'], o['ALT'],\
-                    o['VEL_N'], o['VEL_E'], o['VEL_D'], o['Hacc'], o['Vacc'],\
-                    o['Sacc'], o['bGPS'] = struct.unpack('!HBI6i3IB', data[:44])
+                (
+                    o['Press'],
+                    o['bPrs'],
+                    o['ITOW'],
+                    o['LAT'],
+                    o['LON'],
+                    o['ALT'],
+                    o['VEL_N'],
+                    o['VEL_E'],
+                    o['VEL_D'],
+                    o['Hacc'],
+                    o['Vacc'],
+                    o['Sacc'],
+                    o['bGPS'],
+                ) = struct.unpack('!HBI6i3IB', data[:44])
                 data = data[44:]
                 output['RAWGPS'] = o
             # temperature
             if mode & OutputMode.Temp:
-                temp, = struct.unpack('!f', data[:4])
+                (temp,) = struct.unpack('!f', data[:4])
                 data = data[4:]
                 output['Temp'] = temp
             # calibrated data
             if mode & OutputMode.Calib:
                 o = {}
-                if (settings & OutputSettings.Coordinates_NED):
+                if settings & OutputSettings.Coordinates_NED:
                     o['frame'] = 'NED'
                 else:
                     o['frame'] = 'ENU'
                 if not (settings & OutputSettings.CalibMode_GyrMag):
-                    o['accX'], o['accY'], o['accZ'] = struct.unpack('!3f',
-                                                                    data[:12])
+                    o['accX'], o['accY'], o['accZ'] = struct.unpack('!3f', data[:12])
                     data = data[12:]
                 if not (settings & OutputSettings.CalibMode_AccMag):
-                    o['gyrX'], o['gyrY'], o['gyrZ'] = struct.unpack('!3f',
-                                                                    data[:12])
+                    o['gyrX'], o['gyrY'], o['gyrZ'] = struct.unpack('!3f', data[:12])
                     data = data[12:]
                 if not (settings & OutputSettings.CalibMode_AccGyr):
-                    o['magX'], o['magY'], o['magZ'] = struct.unpack('!3f',
-                                                                    data[:12])
+                    o['magX'], o['magY'], o['magZ'] = struct.unpack('!3f', data[:12])
                     data = data[12:]
                 output['Calib'] = o
             # orientation
             if mode & OutputMode.Orient:
                 o = {}
-                if (settings & OutputSettings.Coordinates_NED):
+                if settings & OutputSettings.Coordinates_NED:
                     o['frame'] = 'NED'
                 else:
                     o['frame'] = 'ENU'
                 if settings & OutputSettings.OrientMode_Euler:
-                    o['roll'], o['pitch'], o['yaw'] = struct.unpack('!3f',
-                                                                    data[:12])
+                    o['roll'], o['pitch'], o['yaw'] = struct.unpack('!3f', data[:12])
                     data = data[12:]
                 elif settings & OutputSettings.OrientMode_Matrix:
-                    a, b, c, d, e, f, g, h, i = struct.unpack('!9f',
-                                                              data[:36])
+                    a, b, c, d, e, f, g, h, i = struct.unpack('!9f', data[:36])
                     data = data[36:]
                     o['matrix'] = ((a, b, c), (d, e, f), (g, h, i))
                 else:  # OutputSettings.OrientMode_Quaternion:
@@ -1119,10 +1333,10 @@ class MTDevice(object):
             if mode & OutputMode.Auxiliary:
                 o = {}
                 if not (settings & OutputSettings.AuxiliaryMode_NoAIN1):
-                    o['Ain_1'], = struct.unpack('!H', data[:2])
+                    (o['Ain_1'],) = struct.unpack('!H', data[:2])
                     data = data[2:]
                 if not (settings & OutputSettings.AuxiliaryMode_NoAIN2):
-                    o['Ain_2'], = struct.unpack('!H', data[:2])
+                    (o['Ain_2'],) = struct.unpack('!H', data[:2])
                     data = data[2:]
                 output['Auxiliary'] = o
             # position
@@ -1134,30 +1348,29 @@ class MTDevice(object):
             # velocity
             if mode & OutputMode.Velocity:
                 o = {}
-                if (settings & OutputSettings.Coordinates_NED):
+                if settings & OutputSettings.Coordinates_NED:
                     o['frame'] = 'NED'
                 else:
                     o['frame'] = 'ENU'
-                o['Vel_X'], o['Vel_Y'], o['Vel_Z'] = struct.unpack('!3f',
-                                                                   data[:12])
+                o['Vel_X'], o['Vel_Y'], o['Vel_Z'] = struct.unpack('!3f', data[:12])
                 data = data[12:]
                 output['Vel'] = o
             # status
             if mode & OutputMode.Status:
-                status, = struct.unpack('!B', data[:1])
+                (status,) = struct.unpack('!B', data[:1])
                 data = data[1:]
                 output['Stat'] = status
             # sample counter
             if settings & OutputSettings.Timestamp_SampleCnt:
-                TS, = struct.unpack('!H', data[:2])
+                (TS,) = struct.unpack('!H', data[:2])
                 data = data[2:]
                 output['Sample'] = TS
             # UTC time
             if settings & OutputSettings.Timestamp_UTCTime:
                 o = {}
-                o['ns'], o['Year'], o['Month'], o['Day'], o['Hour'],\
-                    o['Minute'], o['Second'], o['Flags'] = struct.unpack(
-                        '!ihbbbbb', data[:12])
+                o['ns'], o['Year'], o['Month'], o['Day'], o['Hour'], o['Minute'], o['Second'], o['Flags'] = (
+                    struct.unpack('!ihbbbbb', data[:12])
+                )
                 data = data[12:]
                 output['Timestamp'] = o
             # TODO at that point data should be empty
@@ -1198,7 +1411,7 @@ def find_devices(verbose=False):
     mtdev_list = []
     for port in glob.glob("/dev/tty*S*"):
         if verbose:
-            print ("Trying '%s'") % port
+            print("Trying '%s'" % port)
         try:
             br = find_baudrate(port, verbose)
             if br:
@@ -1212,48 +1425,39 @@ def find_devices(verbose=False):
 # Auto detect baudrate
 ################################################################
 def find_baudrate(port, verbose=False):
-    baudrates = [20000000,
-                 916200,
-                 460800,
-                 230400,
-                 115200,
-                 57600,
-                 38400,
-                 19200,
-                 9600,
-                 4800]
+    baudrates = [20000000, 916200, 460800, 230400, 115200, 57600, 38400, 19200, 9600, 4800]
 
     for br in baudrates:
         if verbose:
-            print ("Trying %d bd:\n") % br,
+            print("Trying %d bd:" % br)
             sys.stdout.flush()
         try:
             mt = MTDevice(port, br, verbose=verbose)
         except serial.SerialException:
             if verbose:
-                print ("fail: unable to open device.")
+                print("fail: unable to open device.")
             raise MTException("unable to open %s" % port)
         except Exception as e:
             if verbose:
-                print (e)
+                print(e)
             continue
 
         try:
             mt.GoToConfig()
             mt.GoToMeasurement()
             if verbose:
-                print ("ok.")
+                print("ok.")
             return br
         except MTException:
             if verbose:
-                print ("fail.")
+                print("fail.")
 
 
 ################################################################
 # Documentation for stand alone usage
 ################################################################
 def usage():
-        print ("""MT device driver.
+    print("""MT device driver.
 Usage:
     ./mtdevice.py [commands] [opts]
 
@@ -1289,6 +1493,9 @@ Commands:
         below).
     -v, --verbose
         Verbose output.
+    -n, --no-ack
+        No-acknowledgment mode: send commands without waiting for responses.
+        Use this when you can send messages but cannot receive them.
 
 Generic options:
     -d, --device=DEV
@@ -1471,21 +1678,38 @@ Deprecated options:
         is made.
 """)
 
+
 ################################################################
 # Main function
 ################################################################
 def main():
     # parse command line
-    shopts = 'hra:c:eild:b:m:s:p:f:x:v'
-    lopts = ['help', 'reset', 'change-baudrate=', 'configure=', 'cb=',
-             'cc=', 'echo', 'inspect', 'legacy-configure', 'device=',
-             'baudrate=', 'output-mode=', 'output-settings=', 'period=',
-             'deprecated-skip-factor=', 'xkf-scenario=', 'verbose']
+    shopts = 'hra:c:eild:b:m:s:p:f:x:vn'
+    lopts = [
+        'help',
+        'reset',
+        'change-baudrate=',
+        'configure=',
+        'cb=',
+        'cc=',
+        'echo',
+        'inspect',
+        'legacy-configure',
+        'device=',
+        'baudrate=',
+        'output-mode=',
+        'output-settings=',
+        'period=',
+        'deprecated-skip-factor=',
+        'xkf-scenario=',
+        'verbose',
+        'no-ack',
+    ]
     try:
         opts, args = getopt.gnu_getopt(sys.argv[1:], shopts, lopts)
     except getopt.GetoptError as e:
-        print (e)
-        #usage()
+        print(e)
+        # usage()
         return 1
     # default values
     device = '/dev/ttyUSB0'
@@ -1497,6 +1721,7 @@ def main():
     new_xkf = None
     actions = []
     verbose = False
+    no_ack = False
     # filling in arguments
     for o, a in opts:
         if o in ('-h', '--help'):
@@ -1518,7 +1743,7 @@ def main():
             try:
                 new_can_baudrate = int(a)
             except ValueError:
-                print ("can_baudrate argument must be integer.")
+                print("can_baudrate argument must be integer.")
                 return 1
             actions.append('can-baudrate')
         elif o in ('--cc', '--can-configure'):
@@ -1536,7 +1761,7 @@ def main():
             try:
                 new_xkf = int(a)
             except ValueError:
-                print ("xkf-scenario argument must be integer.")
+                print("xkf-scenario argument must be integer.")
                 return 1
             actions.append('xkf-scenario')
         elif o in ('-d', '--device'):
@@ -1545,7 +1770,7 @@ def main():
             try:
                 baudrate = int(a)
             except ValueError:
-                print ("baudrate argument must be integer.")
+                print("baudrate argument must be integer.")
                 return 1
         elif o in ('-m', '--output-mode'):
             mode = get_mode(a)
@@ -1559,16 +1784,18 @@ def main():
             try:
                 period = int(a)
             except ValueError:
-                print ("period argument must be integer.")
+                print("period argument must be integer.")
                 return 1
         elif o in ('-f', '--skip-factor'):
             try:
                 skipfactor = int(a)
             except ValueError:
-                print ("skip-factor argument must be integer.")
+                print("skip-factor argument must be integer.")
                 return 1
         elif o in ('-v', '--verbose'):
             verbose = True
+        elif o in ('-n', '--no-ack'):
+            no_ack = True
     # if nothing else: echo
     if len(actions) == 0:
         actions.append('echo')
@@ -1576,22 +1803,21 @@ def main():
         if device == 'auto':
             devs = find_devices(verbose)
             if devs:
-                print ("Detected devices:"), "".join('\n\t%s @ %d' % (d, p)
-                                                   for d, p in devs)
-                print ("Using %s @ %d") % devs[0]
+                print("Detected devices:" + "".join('\n\t%s @ %d' % (d, p) for d, p in devs))
+                print("Using %s @ %d" % devs[0])
                 device, baudrate = devs[0]
             else:
-                print ("No suitable device found.")
+                print("No suitable device found.")
                 return 1
         # find baudrate
         if not baudrate:
             baudrate = find_baudrate(device, verbose)
         if not baudrate:
-            print ("No suitable baudrate found.")
+            print("No suitable baudrate found.")
             return 1
         # open device
         try:
-            mt = MTDevice(device, baudrate, verbose=verbose)
+            mt = MTDevice(device, baudrate, verbose=verbose, no_ack=no_ack)
         except serial.SerialException:
             raise MTException("unable to open %s" % device)
         # execute actions
@@ -1603,109 +1829,117 @@ def main():
             rtcm_baud = None
 
             if ('x' in baud_config) and (baud_config['x'][0] is not None):
-                print ("Changing xbus baudrate from %d to %d:\n") % \
-                    (baudrate, baud_config['x'][0]),
+                print("Changing xbus baudrate from %d to %d:" % (baudrate, baud_config['x'][0]))
                 sys.stdout.flush()
 
                 xbus_baud = baud_config['x'][0]
                 xbus_flow = baud_config['x'][1]
             if ('r' in baud_config) and (baud_config['r'][0] is not None):
-                print ("Changing rtcm baudrate to %d:\n") % (baud_config['r'][0]),
+                print("Changing rtcm baudrate to %d:" % (baud_config['r'][0]))
                 sys.stdout.flush()
 
                 rtcm_baud = baud_config['r'][0]
 
             mt.ChangeBaudrate(xbus_baud, xbus_flow, rtcm_baud)
-            print (" Ok")  # should we test that it was actually ok?
+            print(" Ok")  # should we test that it was actually ok?
         if 'reset' in actions:
-            print ("Restoring factory defaults"),
+            print("Restoring factory defaults")
             sys.stdout.flush()
             mt.RestoreFactoryDefaults()
-            print (" Ok")  # should we test that it was actually ok?
+            print(" Ok")  # should we test that it was actually ok?
         if 'configure' in actions:
-            print ("Changing output configuration"),
+            print("Changing output configuration")
             sys.stdout.flush()
             mt.SetOutputConfiguration(output_config)
-            print (" Ok")  # should we test that it was actually ok?
+            print(" Ok")  # should we test that it was actually ok?
         if 'can-baudrate' in actions:
-            print ("Changing can baudrate to %d:") % (new_can_baudrate),
+            print("Changing can baudrate to %d:" % (new_can_baudrate))
             sys.stdout.flush()
             mt.SetCanConfig(new_can_baudrate)
-            print (" Ok")  # should we test that it was actually ok?
+            print(" Ok")  # should we test that it was actually ok?
         if 'can-configure' in actions:
-            print ("Changing output configuration"),
+            print("Changing output configuration")
             sys.stdout.flush()
             mt.SetCanOutputConfig(can_output_config)
-            print (" Ok")  # should we test that it was actually ok?
+            print(" Ok")  # should we test that it was actually ok?
 
         if 'legacy-configure' in actions:
             if mode is None:
-                print ("output-mode is require to configure the device in " \
-                    "legacy mode.")
+                print("output-mode is require to configure the device in " "legacy mode.")
                 return 1
             if settings is None:
-                print ("output-settings is required to configure the device in " \
-                    "legacy mode.")
+                print("output-settings is required to configure the device in " "legacy mode.")
                 return 1
-            print ("Configuring in legacy mode"),
+            print("Configuring in legacy mode")
             sys.stdout.flush()
             mt.configure_legacy(mode, settings, period, skipfactor)
-            print (" Ok")        # should we test it was actually ok?
+            print(" Ok")  # should we test it was actually ok?
         if 'xkf-scenario' in actions:
-            print ("Changing XKF scenario"),
+            print("Changing XKF scenario")
             sys.stdout.flush()
             mt.SetCurrentScenario(new_xkf)
-            print ("Ok")
+            print("Ok")
         if 'echo' in actions:
             # if (mode is None) or (settings is None):
             #     mode, settings, length = mt.auto_config()
             #     print mode, settings, length
             try:
                 while True:
-                    print (mt.read_measurement(mode, settings))
+                    print(mt.read_measurement(mode, settings))
             except KeyboardInterrupt:
                 pass
     except MTErrorMessage as e:
-        print ("MTErrorMessage: "), e
+        print("MTErrorMessage: ", e)
     except MTException as e:
-        print ("MTException: "), e
+        print("MTException: ", e)
+
 
 def inspect(mt, device, baudrate):
     """Inspection."""
+
     def config_fmt(config):
         """Hexadecimal configuration."""
-        return '[%s]' % ', '.join('(0x%04X, %d)' % (mode, freq)
-                                  for (mode, freq) in config)
+        return '[%s]' % ', '.join('(0x%04X, %d)' % (mode, freq) for (mode, freq) in config)
 
     def hex_fmt(size=4):
         """Factory for hexadecimal representation formatter."""
-        fmt = '0x%%0%dX' % (2*size)
+        fmt = '0x%%0%dX' % (2 * size)
 
         def f(value):
             """Hexadecimal representation."""
             # length of string is twice the size of the value (in bytes)
             return fmt % value
+
         return f
 
     def sync_fmt(settings):
         """Synchronization settings: N*12 bytes"""
-        return '[%s]' % ', '.join('(0x%02X, 0x%02X, 0x%02X, 0x%02X,'
-                                  ' 0x%04X, 0x%04X, 0x%04X, 0x%04X)' % s
-                                  for s in settings)
+        return '[%s]' % ', '.join(
+            '(0x%02X, 0x%02X, 0x%02X, 0x%02X,' ' 0x%04X, 0x%04X, 0x%04X, 0x%04X)' % s for s in settings
+        )
 
     def try_message(m, f, formater=None, *args, **kwargs):
-        print ('  %s ' % m,)
+        print(
+            '  %s ' % m,
+        )
         try:
+            result = f(*args, **kwargs)
             if formater is not None:
-                print (formater(f(*args, **kwargs)))
+                print(formater(result))
             else:
-                pprint.pprint(f(*args, **kwargs), indent=4)
+                pprint.pprint(result, indent=4)
         except MTErrorMessage as e:
             if e.code == 0x04:
-                print ('message unsupported by your device.')
+                print('message unsupported by your device.')
             else:
                 raise e
-    print ("Device: %s at %d Bd:") % (device, baudrate)
+        except MTException as e:
+            if "no-ack mode" in str(e).lower() or mt.no_ack:
+                print('N/A (no-ack mode - command sent but cannot read response)')
+            else:
+                raise e
+
+    print("Device: %s at %d Bd:" % (device, baudrate))
     try_message("device ID:", mt.GetDeviceID, hex_fmt(8))
     try_message("product code:", mt.GetProductCode)
     try_message("firmware revision:", mt.GetFirmwareRev)
@@ -1725,14 +1959,11 @@ def inspect(mt, device, baudrate):
     try_message("transmit delay:", mt.GetTransmitDelay)
     try_message("synchronization settings:", mt.GetSyncSettings, sync_fmt)
     try_message("general configuration:", mt.GetConfiguration)
-    try_message("output configuration (mark IV devices):",
-                mt.GetOutputConfiguration, config_fmt)
+    try_message("output configuration (mark IV devices):", mt.GetOutputConfiguration, config_fmt)
     try_message("string output type:", mt.GetStringOutputType)
     try_message("period:", mt.GetPeriod)
-    try_message("alignment rotation sensor:", mt.GetAlignmentRotation,
-                parameter=0)
-    try_message("alignment rotation local:", mt.GetAlignmentRotation,
-                parameter=1)
+    try_message("alignment rotation sensor:", mt.GetAlignmentRotation, parameter=0)
+    try_message("alignment rotation local:", mt.GetAlignmentRotation, parameter=1)
     try_message("output mode:", mt.GetOutputMode, hex_fmt(2))
     try_message("extended output mode:", mt.GetExtOutputMode, hex_fmt(2))
     try_message("output settings:", mt.GetOutputSettings, hex_fmt(4))
@@ -1741,20 +1972,14 @@ def inspect(mt, device, baudrate):
     try_message("current scenario ID:", mt.GetCurrentScenario)
     try_message("UTC time:", mt.GetUTCTime)
 
+
 def get_can_output_config(config_arg):
     freqs_list = [
-        [400, 200, 100, 80, 50, 40,
-         25, 20, 16, 10, 8, 5, 4, 2, 1],
-
+        [400, 200, 100, 80, 50, 40, 25, 20, 16, 10, 8, 5, 4, 2, 1],
         [100, 50, 25, 20, 10, 5, 4, 2, 1],
-
-        [2000, 1000, 500, 400, 250, 200, 125, 100,
-         80, 50, 40, 25, 20, 16, 10, 8, 5, 4, 2, 1],
-
-        [1600, 800, 400, 320, 200, 160, 100, 80, 64,
-         50, 40, 32, 25, 20, 16, 10, 8, 5, 4, 2, 1],
-
-        [65535]
+        [2000, 1000, 500, 400, 250, 200, 125, 100, 80, 50, 40, 25, 20, 16, 10, 8, 5, 4, 2, 1],
+        [1600, 800, 400, 320, 200, 160, 100, 80, 64, 50, 40, 32, 25, 20, 16, 10, 8, 5, 4, 2, 1],
+        [65535],
     ]
     code_dict = {
         'ts': (0x05, [1]),
@@ -1779,7 +2004,7 @@ def get_can_output_config(config_arg):
         'pv': (0x76, freqs_list[0]),
         'pa': (0x72, freqs_list[0]),
         'gs': (0x79, freqs_list[4]),
-        'gd': (0x7a, freqs_list[4])
+        'gd': (0x7A, freqs_list[4]),
     }
 
     config_re = re.compile('([a-z]{2})(\d+)?')
@@ -1793,10 +2018,12 @@ def get_can_output_config(config_arg):
             else:
                 frequency = freqs[0]
             output_configuration.append((code, 0, 0, frequency))
+            pprint.pprint(output_configuration)
         return output_configuration
     except (IndexError, KeyError):
-        print ('could not parse output specification "%s"') % item
+        print('could not parse output specification "%s"' % item)
         return
+
 
 def get_output_config(config_arg):
     """Parse the mark IV output configuration argument."""
@@ -1834,7 +2061,7 @@ def get_output_config(config_arg):
         'mf': (0xC020, 100),
         'vv': (0xD010, 400),
         'sb': (0xE010, 2000),
-        'sw': (0xE020, 2000)
+        'sw': (0xE020, 2000),
     }
     # format flags
     format_dict = {'f': 0x00, 'd': 0x03, 'e': 0x00, 'n': 0x04, 'w': 0x08}
@@ -1855,8 +2082,9 @@ def get_output_config(config_arg):
             output_configuration.append((code, frequency))
         return output_configuration
     except (IndexError, KeyError):
-        print ('could not parse output specification "%s"') % item
+        print('could not parse output specification "%s"' % item)
         return
+
 
 def get_baudrate_config(baud_config):
     config_re = re.compile('([xr])(\d+)([f]?)')
@@ -1864,10 +2092,10 @@ def get_baudrate_config(baud_config):
     try:
         for item in baud_config.split(','):
             interface, frequency, flow_control = config_re.findall(item.lower())[0]
-            baud_configuration[interface] = [int(frequency), not(bool(flow_control))]
+            baud_configuration[interface] = [int(frequency), not (bool(flow_control))]
         return baud_configuration
     except (IndexError, KeyError):
-        print ('could not parse baudrate specification "%s"') % item
+        print('could not parse baudrate specification "%s"' % item)
         return
 
 
@@ -1911,7 +2139,7 @@ def get_mode(arg):
         elif c == 'r':
             mode |= OutputMode.RAW
         else:
-            print ("Unknown output-mode specifier: '%s'") % c
+            print("Unknown output-mode specifier: '%s'" % c)
             return
     return mode
 
@@ -1965,7 +2193,7 @@ def get_settings(arg):
         elif c == 'N':
             NED = OutputSettings.Coordinates_NED
         else:
-            print ("Unknown output-settings specifier: '%s'") % c
+            print("Unknown output-settings specifier: '%s'" % c)
             return
     settings = timestamp | orient_mode | calib_mode | NED
     return settings

@@ -3,6 +3,7 @@
 
 class DeviceState:
     """State of the device"""
+
     # measurement state
     Measurement = 0
     # config state
@@ -11,6 +12,7 @@ class DeviceState:
 
 class MID:
     """Values for the message id (MID)"""
+
     # Error message, 1 data byte
     Error = 0x42
 
@@ -132,6 +134,7 @@ class MID:
 
 class DeprecatedMID:
     """Deprecated message Ids."""
+
     # Informational messages
     # Compatibility for XBus Master users
     InitMT = 0x02
@@ -173,7 +176,7 @@ class DeprecatedMID:
 def getName(cls, value):
     '''Return the name of the first found member of class cls with given
     value.'''
-    for k, v in cls.__dict__.iteritems():
+    for k, v in cls.__dict__.items():
         if v == value:
             return k
     return ''
@@ -185,13 +188,15 @@ def getMIDName(mid):
     if name:
         return name
     if mid & 1:
-        name = getName(MID, mid-1)
+        name = getName(MID, mid - 1)
         if name:
-            return name+'Ack'
+            return name + 'Ack'
     return 'unknown MID'
+
 
 class Baudrates(object):
     """Baudrate information and conversion."""
+
     # Baudrate mapping between ID and value
     Baudrates = [
         (0x80, 921600),
@@ -199,15 +204,16 @@ class Baudrates(object):
         (0x00, 460800),
         (0x01, 230400),
         (0x02, 115200),
-        (0x03,  76800),
-        (0x04,  57600),
-        (0x05,  38400),
-        (0x06,  28800),
-        (0x07,  19200),
-        (0x08,  14400),
-        (0x09,   9600),
-        (0x0B,   4800),
-        (0x80, 921600)]
+        (0x03, 76800),
+        (0x04, 57600),
+        (0x05, 38400),
+        (0x06, 28800),
+        (0x07, 19200),
+        (0x08, 14400),
+        (0x09, 9600),
+        (0x0B, 4800),
+        (0x80, 921600),
+    ]
 
     Can_Baudrates = [
         (0x0C, 1000000),
@@ -216,13 +222,14 @@ class Baudrates(object):
         (0x00, 250000),
         (0x01, 125000),
         (0x02, 100000),
-        (0x03,  83300),
-        (0x04,  62500),
-        (0x05,  50000),
-        (0x06,  33300),
-        (0x07,  20000),
-        (0x08,  10000),
-        (0x09,   5000)]
+        (0x03, 83300),
+        (0x04, 62500),
+        (0x05, 50000),
+        (0x06, 33300),
+        (0x07, 20000),
+        (0x08, 10000),
+        (0x09, 5000),
+    ]
 
     @classmethod
     def get_can_BRID(cls, baudrate):
@@ -259,6 +266,7 @@ class Baudrates(object):
 
 class OutputMode:
     """Values for the output mode."""
+
     Temp = 0x0001
     Calib = 0x0002
     Orient = 0x0004
@@ -272,6 +280,7 @@ class OutputMode:
 
 class OutputSettings:
     """Values for the output settings."""
+
     Timestamp_None = 0x00000000
     Timestamp_SampleCnt = 0x00000001
     Timestamp_UTCTime = 0x00000002
@@ -299,6 +308,7 @@ class OutputSettings:
 
 class XDIGroup:
     """Values for the XDI groups."""
+
     Temperature = 0x0800
     Timestamp = 0x1000
     OrientationData = 0x2000
@@ -338,7 +348,7 @@ class MTErrorMessage(MTException):
         0x1E: 'Timer overflow',
         0x20: 'Invalid baudrate',
         0x21: 'Invalid parameter',
-        0x28: 'Device error, try updating the firmware'
+        0x28: 'Device error, try updating the firmware',
     }
 
     def __init__(self, code):
