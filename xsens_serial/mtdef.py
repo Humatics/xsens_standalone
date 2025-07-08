@@ -75,7 +75,6 @@ class MID:
     # Configuration, 118 bytes
     Configuration = 0x0D
     # Sampling period (MTi/MTi-G only), 2 bytes
-    SetPeriod = 0x04
     # Extended output mode (MTi-10/100), 2 bytes, bit 4 for extended UART
     SetExtOutputMode = 0x86
     # Output configuration (MTi-1/10/100 series only), N*4 bytes
@@ -85,9 +84,7 @@ class MID:
     # Set sensor of local alignment quaternion
     SetAlignmentRotation = 0xEC
     # Output mode (MTi/MTi-G only), 2 bytes
-    SetOutputMode = 0xD0
     # Output settings (MTi/MTi-G only), 4 bytes
-    SetOutputSettings = 0xD2
 
     # Data messages
     # Request MTData message (for 65535 skip factor)
@@ -123,8 +120,8 @@ class MID:
     SetCanConfig = 0xE6
     SetCanOutputConfig = 0xE8
 
-    SetGnssPlatform = 0x76
-    SetGnssReceiver = 0xAC
+    SetGnssLeverArm = 0x68
+    SetGnssReceiverSettings = 0xAC
     SetHardwareVersion = 0x1E
 
     XbuxInterface = 0x01
@@ -201,6 +198,7 @@ class Baudrates(object):
     Baudrates = [
         (0x80, 921600),
         (0x0A, 921600),
+        (0x0C, 2000000),  # 2 Mbaud support
         (0x00, 460800),
         (0x01, 230400),
         (0x02, 115200),

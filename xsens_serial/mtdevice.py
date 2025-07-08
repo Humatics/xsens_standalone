@@ -263,6 +263,9 @@ class MTDevice(object):
             if self.verbose:
                 print("  No-ACK mode: cannot read product code")
             return "N/A (no-ack mode)"
+        # Properly decode the product code
+        if isinstance(data, (bytes, bytearray)):
+            return data.decode('ascii').strip('\x00 ')
         return str(data).strip()
 
     def GetFirmwareRev(self):
@@ -310,19 +313,20 @@ class MTDevice(object):
         if self.no_ack:
             if self.verbose:
                 print("  No-ACK mode: cannot read CAN config")
-            return 0, 0  # Return dummy values
-        baud = struct.unpack('!I', data)[0]
-        return data[0], (baud & 0x0FFF)
+            return 0  # Return dummy value
+        (config_word,) = struct.unpack('!I', data)
+        return config_word
 
     def SetCanConfig(self, baudrate):
         self._ensure_config_state()
         if baudrate == 0:
-            enable = 0
-            brid = 0
+            # Disable CAN
+            config_word = 0
         else:
-            enable = 1
+            # Enable CAN with specified baudrate
             brid = Baudrates.get_can_BRID(baudrate)
-        data = struct.pack('!HBB', 0, enable, brid)
+            config_word = (1 << 8) | brid  # Set bit 8 (enable) and bits 7:0 (baudrate code)
+        data = struct.pack('!I', config_word)
         self.write_ack(MID.SetCanConfig, data)
 
     def GetCanOutputConfig(self):
@@ -339,18 +343,9 @@ class MTDevice(object):
         data = b''.join(struct.pack('!BBIH', *output) for output in output_configuration)
         self.write_ack(MID.SetCanOutputConfig, data)
 
-    def GetGnssPlatform(self):
+    def GetGnssReceiverSettings(self):
         self._ensure_config_state()
-        data = self.write_ack(MID.SetGnssPlatform)
-        if self.no_ack:
-            if self.verbose:
-                print("  No-ACK mode: cannot read GNSS platform")
-            return b''  # Return empty bytes
-        return data
-
-    def GetGnssReceiver(self):
-        self._ensure_config_state()
-        data = self.write_ack(MID.SetGnssReceiver)
+        data = self.write_ack(MID.SetGnssReceiverSettings)
         if self.no_ack:
             if self.verbose:
                 print("  No-ACK mode: cannot read GNSS receiver")
@@ -385,10 +380,20 @@ class MTDevice(object):
             flowcontrol = port[2]
             brid = port[3]
             if protocol == MID.XbuxInterface:
-                xbus_baud = Baudrates.get_BR(brid)
+                try:
+                    xbus_baud = Baudrates.get_BR(brid)
+                except MTException:
+                    if self.verbose:
+                        print(f"  Warning: Unknown XBus baudrate ID: 0x{brid:02X}")
+                    xbus_baud = f"Unknown (ID: 0x{brid:02X})"
                 xbus_flow = flowcontrol
             elif protocol == MID.RtcmInterface:
-                rtcm_baud = Baudrates.get_BR(brid)
+                try:
+                    rtcm_baud = Baudrates.get_BR(brid)
+                except MTException:
+                    if self.verbose:
+                        print(f"  Warning: Unknown RTCM baudrate ID: 0x{brid:02X}")
+                    rtcm_baud = f"Unknown (ID: 0x{brid:02X})"
         return xbus_baud, xbus_flow, rtcm_baud
 
     def SetPortConfig(self, xbus_brid, xbus_flow, rtcm_brid):
@@ -447,14 +452,19 @@ class MTDevice(object):
         if self.no_ack:
             if self.verbose:
                 print("  No-ACK mode: cannot read option flags")
-            return (0,)  # Return dummy tuple
-        set_flags = struct.unpack('!I', data)
-        return set_flags
+            return (0, 0)  # Return dummy tuple
+        # Response contains 4 bytes: current option flags
+        if len(data) == 4:
+            (current_flags,) = struct.unpack('!I', data)
+            return (current_flags, 0)  # Return current flags and 0 for clear flags
+        else:
+            raise MTException(f"Unexpected option flags response length: {len(data)} bytes")
 
     def SetOptionFlags(self, set_flags, clear_flags):
         """Set the option flags (MTi-1 series)."""
         self._ensure_config_state()
-        data = struct.pack('!I', set_flags, clear_flags)
+        # Pack 8 bytes: SetFlags (4 bytes) + ClearFlags (4 bytes)
+        data = struct.pack('!II', set_flags, clear_flags)
         self.write_ack(MID.SetOptionFlags, data)
 
     def GetLocationID(self):
@@ -514,30 +524,78 @@ class MTDevice(object):
         self.write_ack(MID.SetSyncSettings, data)
 
     def GetConfiguration(self):
-        """Ask for the current configuration of the MT device."""
+        """Ask for the current configuration of the MT device.
+
+        Supports both formats:
+        - Older MTi devices (118 bytes): include period, skip factor, output mode/settings
+        - MTi-600s devices (114 bytes): 8-byte device IDs, no legacy output fields
+        """
         self._ensure_config_state()
         config = self.write_ack(MID.ReqConfiguration)
         if self.no_ack:
             if self.verbose:
                 print("  No-ACK mode: cannot read configuration")
             return {
+                'device_type': 'unknown',
                 'output-mode': 0,
                 'output-settings': 0,
                 'length': 0,
                 'period': 0,
                 'skipfactor': 0,
+                'sync_mode': 0,
+                'sync_skip_factor': 0,
+                'sync_offset': 0,
                 'Master device ID': 0,
                 'date': b'',
                 'time': b'',
                 'number of devices': 0,
                 'device ID': 0,
             }
-        try:
-            masterID, period, skipfactor, _, _, _, date, time, num, deviceID, length, mode, settings = struct.unpack(
-                '!IHHHHI8s8s32x32xHIHHI8x', config
-            )
-        except struct.error:
-            raise MTException("could not parse configuration.")
+
+        # Determine format based on message length
+        config_len = len(config)
+
+        if config_len == 118:
+            # Older MTi devices format (118 bytes)
+            try:
+                (
+                    masterID,
+                    period,
+                    skipfactor,
+                    sync_mode,
+                    sync_skip_factor,
+                    sync_offset,
+                    date,
+                    time,
+                    num,
+                    deviceID,
+                    length,
+                    mode,
+                    settings,
+                ) = struct.unpack('!IHHHHI8s8s32x32xHIHHI8x', config)
+                device_type = 'legacy'
+            except struct.error:
+                raise MTException("could not parse legacy MTi configuration (118 bytes).")
+
+        elif config_len == 114:
+            # MTi-600s format (114 bytes)
+            try:
+                (masterID, sync_mode, sync_skip_factor, sync_offset, date, time, num, deviceID) = struct.unpack(
+                    '!QHHI8s8s32x32xHQ12x', config
+                )
+                # MTi-600s doesn't have these legacy fields
+                period = 0
+                skipfactor = 0
+                length = 0
+                mode = 0
+                settings = 0
+                device_type = 'mti600s'
+            except struct.error:
+                raise MTException("could not parse MTi-600s configuration (114 bytes).")
+        else:
+            raise MTException(f"unknown configuration format: {config_len} bytes (expected 114 or 118).")
+
+        # Store relevant fields in instance
         self.mode = mode
         self.settings = settings
         self.length = length
@@ -545,12 +603,17 @@ class MTDevice(object):
             self.header = b'\xfa\xff\x32' + struct.pack('!B', self.length)
         else:
             self.header = b'\xfa\xff\x32\xff' + struct.pack('!H', self.length)
+
         conf = {
+            'device_type': device_type,
             'output-mode': mode,
             'output-settings': settings,
             'length': length,
             'period': period,
             'skipfactor': skipfactor,
+            'sync_mode': sync_mode,
+            'sync_skip_factor': sync_skip_factor,
+            'sync_offset': sync_offset,
             'Master device ID': masterID,
             'date': date,
             'time': time,
@@ -560,7 +623,14 @@ class MTDevice(object):
         return conf
 
     def GetOutputConfiguration(self):
-        """Get the output configuration of the device (mark IV)."""
+        """Get the output configuration of the device (mark IV).
+
+        This method is the modern replacement for the removed legacy methods
+        GetPeriod, GetOutputMode, and GetOutputSettings.
+
+        Returns a list of (data_identifier, frequency) tuples showing the current
+        output configuration.
+        """
         self._ensure_config_state()
         data = self.write_ack(MID.SetOutputConfiguration)
         if self.no_ack:
@@ -571,7 +641,19 @@ class MTDevice(object):
         return output_configuration
 
     def SetOutputConfiguration(self, output_configuration):
-        """Set the output configuration of the device (mark IV)."""
+        """Set the output configuration of the device (mark IV).
+
+        This is the modern way to configure output on MTi devices. It replaces the
+        following removed legacy methods:
+        - SetPeriod (0x04)
+        - SetOutputSkipFactor (0xD4)
+        - SetOutputMode (0xD0)
+        - SetOutputSettings (0xD2)
+
+        The data is a list of up to 32 data identifiers combined with desired output frequencies.
+        Each entry is (data_identifier, frequency) where frequency of 0x0000 or 0xFFFF
+        selects maximum frequency for the given data identifier.
+        """
         self._ensure_config_state()
         data = b''.join(struct.pack('!HH', *output) for output in output_configuration)
         self.write_ack(MID.SetOutputConfiguration, data)
@@ -592,23 +674,6 @@ class MTDevice(object):
         self._ensure_config_state()
         data = struct.pack('!H', string_output_type)
         self.write_ack(MID.SetStringOutputType, data)
-
-    def GetPeriod(self):
-        """Get the sampling period."""
-        self._ensure_config_state()
-        data = self.write_ack(MID.SetPeriod)
-        if self.no_ack:
-            if self.verbose:
-                print("  No-ACK mode: cannot read period")
-            return 0  # Return dummy value
-        (period,) = struct.unpack('!H', data)
-        return period
-
-    def SetPeriod(self, period):
-        """Set the sampling period."""
-        self._ensure_config_state()
-        data = struct.pack('!H', period)
-        self.write_ack(MID.SetPeriod, data)
 
     def GetAlignmentRotation(self, parameter):
         """Get the object alignment.
@@ -638,24 +703,6 @@ class MTDevice(object):
         data = struct.pack('!Bffff', parameter, *quaternion)
         self.write_ack(MID.SetAlignmentRotation, data)
 
-    def GetOutputMode(self):
-        """Get current output mode."""
-        self._ensure_config_state()
-        data = self.write_ack(MID.SetOutputMode)
-        if self.no_ack:
-            if self.verbose:
-                print("  No-ACK mode: cannot read output mode")
-            return 0  # Return dummy value
-        (self.mode,) = struct.unpack('!H', data)
-        return self.mode
-
-    def SetOutputMode(self, mode):
-        """Select which information to output."""
-        self._ensure_config_state()
-        data = struct.pack('!H', mode)
-        self.write_ack(MID.SetOutputMode, data)
-        self.mode = mode
-
     def GetExtOutputMode(self):
         """Get current extended output mode (for alternative UART)."""
         self._ensure_config_state()
@@ -672,38 +719,6 @@ class MTDevice(object):
         self._ensure_config_state()
         data = struct.pack('!H', ext_mode)
         self.write_ack(MID.SetExtOutputMode, data)
-
-    def GetOutputSettings(self):
-        """Get current output mode."""
-        self._ensure_config_state()
-        data = self.write_ack(MID.SetOutputSettings)
-        if self.no_ack:
-            if self.verbose:
-                print("  No-ACK mode: cannot read output settings")
-            return 0  # Return dummy value
-        (self.settings,) = struct.unpack('!I', data)
-        return self.settings
-
-    # def SetOutputSettingsTEMP(self, settings):
-    #     """Select how to output the information."""
-    #     self._ensure_config_state()
-    #     data = struct.pack('!bbbbbbbxbbbbxxbbbbbxxxxxxxxxxxxb',
-    #         1,0,0,0)
-    #     self.write_ack(MID.SetOutputSettings, data)
-    #     self.settings = settings
-
-    def SetOutputSettings(self, settings):
-        """Select how to output the information."""
-        self._ensure_config_state()
-        data = struct.pack('!I', settings)
-        self.write_ack(MID.SetOutputSettings, data)
-        self.settings = settings
-
-    def SetOutputSkipFactor(self, skipfactor):  # deprecated
-        """Set the output skip factor."""
-        self._ensure_config_state()
-        data = struct.pack('!H', skipfactor)
-        self.write_ack(DeprecatedMID.SetOutputSkipFactor, data)
 
     def ReqDataLength(self):  # deprecated
         """Get data length for mark III devices."""
@@ -748,6 +763,30 @@ class MTDevice(object):
         data = struct.pack('!ddd', lat, lon, alt)
         self.write_ack(MID.SetLatLonAlt, data)
 
+    def GetGnssLeverArm(self):
+        """Get the lever arm of the GNSS receiver."""
+        self._ensure_config_state()
+        data = self.write_ack(MID.SetGnssLeverArm)
+        if self.no_ack:
+            if self.verbose:
+                print("  No-ACK mode: cannot read GNSS lever arm")
+            return (0.0, 0.0, 0.0)  # Return dummy values
+        if len(data) == 24:
+            x, y, z = struct.unpack('!ddd', data)
+        elif len(data) == 12:
+            x, y, z = struct.unpack('!fff', data)
+        else:
+            raise MTException(
+                'Could not parse GetGnssLeverArmAck message: wrong size of message (%d bytes).' % len(data)
+            )
+        return (x, y, z)
+
+    def SetGnssLeverArm(self, x, y, z):
+        """Set the lever arm of the GNSS receiver."""
+        self._ensure_config_state()
+        data = struct.pack('!ddd', x, y, z)
+        self.write_ack(MID.SetGnssLeverArm, data)
+
     def GetAvailableScenarios(self):
         """Get the available XKF scenarios on the device."""
         self._ensure_config_state()
@@ -768,15 +807,18 @@ class MTDevice(object):
         return scenarios
 
     def GetCurrentScenario(self):
-        """Get the ID of the currently used XKF scenario."""
+        """Get the currently used XKF scenario filter profile(s)."""
         self._ensure_config_state()
         data = self.write_ack(MID.SetCurrentScenario)
         if self.no_ack:
             if self.verbose:
                 print("  No-ACK mode: cannot read current scenario")
-            return 0  # Return dummy value
-        _, self.scenario_id = struct.unpack('!BB', data[:2])  # version, id
-        return self.scenario_id
+            return "N/A (no-ack mode)"  # Return dummy value
+        if isinstance(data, (bytes, bytearray)):
+            scenario_string = data.decode('ascii').strip('\x00 ')
+        else:
+            scenario_string = str(data)
+        return scenario_string
 
     def SetCurrentScenario(self, scenario_id):
         """Sets the XKF scenario to use."""
@@ -844,12 +886,6 @@ class MTDevice(object):
             if self.verbose:
                 print("no ack received while switching from MTData2 to MTData: %s" % e)
             pass  # no ack???
-        self.SetOutputMode(mode)
-        self.SetOutputSettings(settings)
-        if period is not None:
-            self.SetPeriod(period)
-        if skipfactor is not None:
-            self.SetOutputSkipFactor(skipfactor)
         self.GetConfiguration()
 
     def auto_config_legacy(self):
@@ -1491,6 +1527,8 @@ Commands:
     -l, --legacy-configure
         Configure the device in legacy mode (needs MODE and SETTINGS arguments
         below).
+    -g, --gnss-lever-arm=X,Y,Z
+        Set the lever arm of the GNSS receiver.
     -v, --verbose
         Verbose output.
     -n, --no-ack
@@ -1704,6 +1742,7 @@ def main():
         'xkf-scenario=',
         'verbose',
         'no-ack',
+        'gnss-lever-arm=',
     ]
     try:
         opts, args = getopt.gnu_getopt(sys.argv[1:], shopts, lopts)
@@ -1796,6 +1835,16 @@ def main():
             verbose = True
         elif o in ('-n', '--no-ack'):
             no_ack = True
+        elif o in ('-g', '--gnss-lever-arm'):
+            try:
+                gnss_lever_arm = [float(x) for x in a.split(',')]
+            except ValueError:
+                print("gnss-lever-arm argument must be in the format X,Y,Z (float)")
+                return 1
+            if len(gnss_lever_arm) != 3:
+                print("gnss-lever-arm argument must be in the format X,Y,Z (float)")
+                return 1
+            actions.append('gnss-lever-arm')
     # if nothing else: echo
     if len(actions) == 0:
         actions.append('echo')
@@ -1888,6 +1937,11 @@ def main():
                     print(mt.read_measurement(mode, settings))
             except KeyboardInterrupt:
                 pass
+        if 'gnss-lever-arm' in actions:
+            print("Setting GNSS lever arm to %s" % gnss_lever_arm)
+            sys.stdout.flush()
+            mt.SetGnssLeverArm(gnss_lever_arm[0], gnss_lever_arm[1], gnss_lever_arm[2])
+            print("Ok")
     except MTErrorMessage as e:
         print("MTErrorMessage: ", e)
     except MTException as e:
@@ -1898,8 +1952,103 @@ def inspect(mt, device, baudrate):
     """Inspection."""
 
     def config_fmt(config):
-        """Hexadecimal configuration."""
-        return '[%s]' % ', '.join('(0x%04X, %d)' % (mode, freq) for (mode, freq) in config)
+        """Enhanced output configuration with XDI decoding."""
+        if not config:
+            return '[]'
+
+        # XDI (Xsens Data Identifier) mapping based on MTi documentation
+        xdi_map = {
+            # Temperature
+            0x0810: 'Temperature',
+            # Timestamp group (0x1xxx)
+            0x1010: 'Packet Counter',
+            0x1020: 'Sample Time Fine',
+            0x1030: 'Sample Time Coarse',
+            0x1060: 'UTC Time',
+            0x1070: 'Frame Range',
+            0x1080: 'Packet Counter 8',
+            # Orientation group (0x2xxx)
+            0x2010: 'Quaternion (Float)',
+            0x2020: 'Rotation Matrix (Float)',
+            0x2030: 'Euler Angles (Float)',
+            0x2012: 'Quaternion (Fixed)',
+            0x2022: 'Rotation Matrix (Fixed)',
+            0x2032: 'Euler Angles (Fixed)',
+            # Pressure group (0x3xxx)
+            0x3010: 'Barometric Pressure',
+            # Acceleration group (0x4xxx)
+            0x4010: 'Delta V',
+            0x4020: 'Acceleration',
+            0x4030: 'Free Acceleration',
+            0x4040: 'Acceleration HR',
+            # Position group (0x5xxx)
+            0x5020: 'Altitude MSL',
+            0x5030: 'Altitude Ellipsoid',
+            0x5040: 'Position ECEF',
+            0x5042: 'Lat/Lon',
+            # GNSS group (0x7xxx)
+            0x7010: 'GNSS PVT Data',
+            0x7020: 'GNSS Satellites Info',
+            # Angular velocity group (0x8xxx)
+            0x8020: 'Rate of Turn',
+            0x8030: 'Delta Q',
+            0x8040: 'Rate of Turn HR',
+            0x8830: 'GNSS DOP',
+            0x8840: 'GNSS Sol',
+            0x8880: 'GNSS Time UTC',
+            0x88A0: 'GNSS Sv Info',
+            # Raw sensor group (0xAxxx)
+            0xA010: 'Raw Acc Gyr Mag Temp',
+            0xA020: 'Raw Gyro Temp',
+            # Magnetic group (0xCxxx)
+            0xC020: 'Magnetic Field',
+            # Velocity group (0xDxxx)
+            0xD010: 'Velocity XYZ',
+            0xD012: 'Velocity NED',
+            # Status group (0xExxx)
+            0xE010: 'Status Byte',
+            0xE020: 'Status Word',
+        }
+
+        lines = []
+        for mode, freq in config:
+            # Extract base XDI (remove format/coordinate flags)
+            base_xdi = mode & 0xFFF0
+            if base_xdi == 0:
+                base_xdi = mode & 0xFF00
+
+            # Try to find the identifier
+            name = xdi_map.get(mode) or xdi_map.get(base_xdi) or f'Unknown XDI (0x{mode:04X})'
+
+            # Add format/coordinate info if applicable
+            format_flags = mode & 0x000F
+            if format_flags:
+                format_info = []
+                if format_flags & 0x0003 == 0x0000:
+                    format_info.append('Float')
+                elif format_flags & 0x0003 == 0x0003:
+                    format_info.append('Double')
+                elif format_flags & 0x0003 == 0x0001:
+                    format_info.append('Fixed12.20')
+                elif format_flags & 0x0003 == 0x0002:
+                    format_info.append('Fixed16.32')
+
+                if format_flags & 0x0004:
+                    format_info.append('NED')
+                elif format_flags & 0x0008:
+                    format_info.append('NWU')
+                else:
+                    format_info.append('ENU')
+
+                if format_info:
+                    name += f' ({", ".join(format_info)})'
+
+            lines.append(f'    {name:<35} | {freq:>6} Hz | 0x{mode:04X}')
+
+        header = f'    {"Message Type":<35} | {"Freq":<6} | {"XDI"}'
+        separator = f'    {"-" * 35}-+-{"-" * 6}-+-{"-" * 6}'
+
+        return '\n' + header + '\n' + separator + '\n' + '\n'.join(lines)
 
     def hex_fmt(size=4):
         """Factory for hexadecimal representation formatter."""
@@ -1913,64 +2062,509 @@ def inspect(mt, device, baudrate):
         return f
 
     def sync_fmt(settings):
-        """Synchronization settings: N*12 bytes"""
-        return '[%s]' % ', '.join(
-            '(0x%02X, 0x%02X, 0x%02X, 0x%02X,' ' 0x%04X, 0x%04X, 0x%04X, 0x%04X)' % s for s in settings
+        """Format sync settings with MTi-600s specific knowledge and aligned values."""
+        if not settings:
+            return "No sync settings"
+
+        # Function mapping based on MTi documentation
+        function_map = {
+            3: "TriggerIndication",
+            4: "Interval Transition Measurement",
+            8: "SendLatest",
+            9: "Clock Bias Estimation",
+            11: "StartSampling",
+            14: "GNSS 1 PPS",
+        }
+
+        # MTi-600s sync line mapping (MTi-680G has internal line 10 for GNSS 1 PPS)
+        line_map = {
+            1: "SyncIn",
+            2: "SyncOut",
+            4: "ClockIn",
+            5: "GPSClockIn (Obsolete)",
+            8: "ReqData",
+            9: "SyncOut2",
+            10: "In3 (Input line 3)",  # MTi-680G internal sync line
+        }
+
+        # Polarity mapping
+        polarity_map = {
+            0: "Disabled",
+            1: "Rising Edge / Positive Pulse",
+            2: "Falling Edge / Negative Pulse",
+            3: "Both Edges / Toggle",
+        }
+
+        lines = []
+        setting_num = 1
+
+        # GetSyncSettings returns a list of tuples: (function, line, polarity, trigger, skip_first, skip_factor, pulse_width, delay)
+        for setting in settings:
+            if len(setting) != 8:
+                continue
+
+            function, line, polarity, trigger, skip_first, skip_factor, pulse_width, delay = setting
+
+            # Skip disabled settings
+            if polarity == 0:
+                continue
+
+            lines.append(f"\n    Setting {setting_num}:")
+
+            # Function (using 32-char field to align values at column 38)
+            func_name = function_map.get(function, f"Unknown ({function})")
+            lines.append(f"\n      Function:                       {func_name}")
+
+            # Line
+            line_name = line_map.get(line, f"Unknown line ({line})")
+            lines.append(f"\n      Line:                           {line_name}")
+
+            # Polarity
+            pol_name = polarity_map.get(polarity, f"Unknown ({polarity})")
+            lines.append(f"\n      Polarity:                       {pol_name}")
+
+            # Trigger type
+            if trigger == 0:
+                lines.append(f"\n      Trigger:                        Continuous")
+            else:
+                lines.append(f"\n      Trigger:                        Single shot")
+
+            # Skip settings
+            lines.append(f"\n      Skip First:                     {skip_first}")
+            lines.append(f"\n      Skip Factor:                    {skip_factor}")
+
+            # Timing (convert from 100μs units and handle sync in/out differences)
+            if function in [3, 4, 9]:  # Sync in functions - delay
+                delay_ms = delay * 100 / 1000  # Convert 100μs to ms
+                lines.append(f"\n      Delay:                          {delay_ms:.1f} ms")
+            elif function in [8, 11, 14]:  # Sync out functions - pulse width and offset
+                pulse_width_ms = pulse_width * 100 / 1000
+                delay_ms = delay * 100 / 1000
+                lines.append(f"\n      Pulse Width:                    {pulse_width_ms:.1f} ms")
+                lines.append(f"\n      Offset:                         {delay_ms:.1f} ms")
+
+            setting_num += 1
+
+        if not lines:
+            return "All settings disabled"
+
+        return ''.join(lines)
+
+    def bytearray_fmt(data):
+        """Format bytearray data in a readable way."""
+        if isinstance(data, (bytes, bytearray)):
+            # Try to decode as ASCII string first
+            try:
+                decoded = data.decode('ascii').strip('\x00 ')
+                if decoded and all(c.isprintable() for c in decoded):
+                    return '"{}"'.format(decoded)
+            except UnicodeDecodeError:
+                pass
+
+            # If not a readable string, show as hex
+            if len(data) <= 16:
+                return '[' + ' '.join('{:02X}'.format(b) for b in data) + ']'
+            else:
+                # For longer data, show first few bytes + length
+                preview = ' '.join('{:02X}'.format(b) for b in data[:8])
+                return '[{} ... ] ({} bytes)'.format(preview, len(data))
+        return str(data)
+
+    def port_config_fmt(config):
+        """Format port configuration with aligned values."""
+        if isinstance(config, tuple) and len(config) == 3:
+            xbus_baud, xbus_flow, rtcm_baud = config
+            lines = []
+
+            # XBus configuration (aligned values at column 38)
+            flow_str = "with flow control" if xbus_flow else "no flow control"
+            lines.append(f"XBus: {xbus_baud:,} baud ({flow_str}), RTCM: {rtcm_baud:,} baud")
+
+            return lines[0]
+        elif isinstance(config, dict):
+            lines = []
+
+            # XBus configuration (aligned values at column 38)
+            xbus_baud = config.get('XBus Baudrate')
+            xbus_flow = config.get('XBus Flow Control')
+
+            if xbus_baud is not None:
+                flow_str = "with flow control" if xbus_flow else "no flow control"
+                lines.append(f"    XBus:                           {xbus_baud:,} baud ({flow_str})")
+
+            # RTCM configuration
+            rtcm_baud = config.get('RTCM Baudrate')
+            if rtcm_baud is not None:
+                lines.append(f"    RTCM:                           {rtcm_baud:,} baud")
+
+            if not lines:
+                return "No port configuration"
+
+            return '\n' + '\n'.join(lines)
+        else:
+            return str(config)
+
+    def baudrate_fmt(brid):
+        """Format baudrate ID to actual baudrate."""
+        try:
+            actual_baud = Baudrates.get_BR(brid)
+            return '{} baud'.format(actual_baud)
+        except MTException:
+            return 'Unknown baudrate ID: {}'.format(brid)
+
+    def scenario_fmt(scenarios):
+        """Format available scenarios."""
+        if not scenarios:
+            return 'None'
+        formatted = []
+        for scenario_type, version, label in scenarios:
+            label_str = label.decode('ascii').strip('\x00 ') if isinstance(label, bytes) else str(label)
+            formatted.append('      {}: {} (v{})'.format(scenario_type, label_str, version))
+        return '\n' + '\n'.join(formatted)
+
+    def current_scenario_fmt(scenario_string):
+        """Format current scenario filter profile(s)."""
+        if not isinstance(scenario_string, str):
+            return str(scenario_string)
+
+        # The scenario string may contain multiple profiles separated by '/'
+        if '/' in scenario_string:
+            profiles = scenario_string.split('/')
+            return f'"{scenario_string}" (Combined: {", ".join(profiles)})'
+        else:
+            return f'"{scenario_string}"'
+
+    def firmware_fmt(fw):
+        """Format firmware revision."""
+        major, minor, revision = fw
+        return '{}.{}.{}'.format(major, minor, revision)
+
+    def hardware_version_fmt(hw):
+        """Format hardware version."""
+        major, minor = hw
+        return '{}.{}'.format(major, minor)
+
+    def gps_coords_fmt(coords):
+        """Format GPS coordinates."""
+        lat, lon, alt = coords
+        return '{:.6f}°, {:.6f}°, {:.1f}m'.format(lat, lon, alt)
+
+    def lever_arm_fmt(coords):
+        """Format lever arm coordinates."""
+        x, y, z = coords
+        return '({:.3f}, {:.3f}, {:.3f}) meters'.format(x, y, z)
+
+    def utc_time_fmt(time_data):
+        """Format UTC time."""
+        ns, year, month, day, hour, minute, second, flag = time_data
+        return '{:04d}-{:02d}-{:02d} {:02d}:{:02d}:{:02d}.{:03d} (flags: 0x{:02X})'.format(
+            year, month, day, hour, minute, second, ns // 1000000, flag
         )
 
+    def can_output_config_fmt(data):
+        """CAN output configuration with complete XDI mapping and tabular format."""
+        # Complete XCDI message type mapping based on MTi documentation
+        all_message_types = {
+            # Timestamp messages
+            0x05: 'Timestamp Sample',
+            0x06: 'Group Counter',
+            0x07: 'UTC Time',
+            # Error/Status messages
+            0x01: 'Error',
+            0x02: 'Warning',
+            0x11: 'Status Word',
+            # Orientation messages
+            0x21: 'Quaternion',
+            0x22: 'Euler Angles',
+            # Motion messages
+            0x31: 'Delta V',
+            0x32: 'Rate of Turn',
+            0x33: 'Delta Q',
+            0x34: 'Acceleration',
+            0x35: 'Free Acceleration',
+            # Magnetic/Temperature
+            0x41: 'Magnetic Field',
+            0x51: 'Temperature',
+            0x52: 'Barometric Pressure',
+            # High Rate sensors
+            0x61: 'Rate of Turn HR',
+            0x62: 'Acceleration HR',
+            # Position/GNSS
+            0x71: 'Latitude/Longitude',
+            0x72: 'Altitude Ellipsoid',
+            0x73: 'Position ECEF X',
+            0x74: 'Position ECEF Y',
+            0x75: 'Position ECEF Z',
+            0x76: 'Velocity XYZ',
+            0x79: 'GNSS Status',
+            0x7A: 'GNSS DOP',
+        }
+
+        # Parse configured messages
+        configured_messages = {}
+        if isinstance(data, (bytes, bytearray)) and len(data) >= 8:
+            try:
+                for i in range(0, len(data), 8):
+                    if i + 8 <= len(data):
+                        config_bytes = data[i : i + 8]
+                        msg_type, frequency = struct.unpack('!B5xH', config_bytes)
+                        configured_messages[msg_type] = frequency
+            except (struct.error, IndexError):
+                # If parsing fails, fall back to hex display
+                return bytearray_fmt(data)
+
+        # Create table rows for all possible message types
+        configs = []
+        for msg_type in sorted(all_message_types.keys()):
+            type_name = all_message_types[msg_type]
+
+            if msg_type in configured_messages:
+                frequency = configured_messages[msg_type]
+                # Format frequency
+                if frequency == 0x07FF:
+                    freq_str = 'Max freq'
+                elif frequency == 0xFFFF:
+                    freq_str = 'On change'
+                elif frequency == 0:
+                    freq_str = 'Disabled'
+                else:
+                    freq_str = f'{frequency} Hz'
+            else:
+                freq_str = 'Disabled'
+
+            # Create tabular row with proper spacing
+            configs.append(f'    {type_name:<25} | {freq_str:>10} | 0x{msg_type:02X}')
+
+        # Add header for the table
+        header = f'    {"Message Type":<25} | {"Frequency":>10} | {"ID"}'
+        separator = f'    {"-" * 25}-+-{"-" * 10}-+-----'
+        return '\n' + header + '\n' + separator + '\n' + '\n'.join(configs)
+
+    def can_config_fmt(config):
+        """Format CAN configuration with aligned values."""
+        if not isinstance(config, int):
+            return str(config)
+
+        lines = []
+
+        # Extract bit fields from 32-bit configuration word
+        baudrate_code = config & 0xFF  # Bits 7:0
+        can_enable = bool(config & 0x100)  # Bit 8
+        termination_120 = bool(config & 0x800)  # Bit 11
+
+        # Get CAN baudrate using proper lookup from mtdef.py
+        try:
+            baudrate_value = Baudrates.get_can_BR(baudrate_code)
+            baudrate_str = f"{baudrate_value:,}"
+        except MTException:
+            baudrate_str = f"Unknown ({baudrate_code})"
+
+        # Format with aligned values (using 32-char field to align values at column 38)
+        if can_enable:
+            lines.append(f"Enabled, {baudrate_str} baud")
+            if termination_120:
+                lines.append(f"    120Ω termination:               Enabled")
+        else:
+            lines.append(f"Disabled")
+
+        return '\n    '.join([''] + lines) if len(lines) > 1 else lines[0] if lines else "No CAN config"
+
+    def gnss_receiver_settings_fmt(data):
+        """Format GNSS receiver settings with aligned values."""
+        if not isinstance(data, (bytes, bytearray)):
+            return str(data)
+
+        if len(data) < 10:
+            return f"Invalid data length ({len(data)} bytes, expected 10): {bytearray_fmt(data)}"
+
+        try:
+            # Parse the 10-byte GNSS receiver settings structure (original format)
+            # uint16: GNSS receiver type, uint16: Baud rate, uint16: Input rate, uint32: Options
+            receiver_type, baudrate_code, input_rate, options = struct.unpack('!HHHI', data[:10])
+
+            lines = []
+
+            # Receiver type mapping
+            receiver_types = {
+                0x0000: "u-blox MAX-M8Q",
+                0x0001: "Generic NMEA",
+                0x0002: "u-blox NEO-M8P",
+                0x0003: "u-blox ZED-F9P",
+                0x0004: "Septentrio Mosaic X5",
+                0x0005: "Trimble BX992",
+            }
+
+            receiver_name = receiver_types.get(receiver_type, f"Unknown (0x{receiver_type:04X})")
+            lines.append(f"    Receiver Type:                  {receiver_name}")
+
+            # Baudrate
+            try:
+                baudrate_value = Baudrates.get_BR(baudrate_code)
+                baudrate_str = f"{baudrate_value:,} baud"
+            except MTException:
+                baudrate_str = f"Unknown baudrate (code: 0x{baudrate_code:04X})"
+            lines.append(f"    Baudrate:                       {baudrate_str}")
+
+            # Input rate
+            lines.append(f"    Input Rate:                     {input_rate} Hz")
+
+            # Receiver options (depends on receiver type)
+            if receiver_type == 0x0001:  # Generic NMEA
+                nmea_talker_ids = {
+                    0x0000: "GL",
+                    0x0001: "GN",
+                    0x0002: "GP",
+                }
+                talker_id = nmea_talker_ids.get(options, f"Unknown (0x{options:08X})")
+                lines.append(f"    NMEA Talker ID:                 {talker_id}")
+
+            elif receiver_type in [0x0000, 0x0002, 0x0003]:  # u-blox receivers
+                platform_models = {
+                    0x0000: "Portable (default)",
+                    0x0002: "Stationary",
+                    0x0003: "Pedestrian",
+                    0x0004: "Automotive",
+                    0x0005: "At sea",
+                    0x0006: "Airborne (<1 g)",
+                    0x0007: "Airborne (<2 g)",
+                    0x0008: "Airborne (<4 g)",
+                    0x0009: "Wrist worn watch",
+                    0x000A: "Bike",
+                }
+                platform = platform_models.get(options, f"Unknown (0x{options:08X})")
+                lines.append(f"    Dynamic Platform Model:         {platform}")
+
+            elif receiver_type in [0x0004, 0x0005]:  # Septentrio/Trimble
+                lines.append(f"    Options:                        Ignored (0x{options:08X})")
+            else:
+                lines.append(f"    Options:                        0x{options:08X}")
+
+            return '\n' + '\n'.join(lines)
+
+        except struct.error:
+            return f"Parse error: {bytearray_fmt(data)}"
+
+    def option_flags_fmt(flags_data):
+        """Format option flags with descriptions."""
+        if not isinstance(flags_data, tuple) or len(flags_data) != 2:
+            return str(flags_data)
+
+        current_flags, clear_flags = flags_data
+
+        # Option flags definitions from MTi documentation
+        option_flags = {
+            0x00000001: ("DisableAutoStore", "MTi 1-series", "Disable automatic writing to flash memory"),
+            0x00000002: ("DisableAutoMeasurement", "MTi 1/600-series", "Stay in Config Mode upon startup"),
+            0x00000004: ("EnableBeidou", "MTi-7/670/G-710", "Enable Beidou, disable GLONASS"),
+            0x00000008: ("Reserved", "", "Reserved flag"),
+            0x00000010: ("EnableAhs", "MTi 1/10/100-series", "Enable Active Heading Stabilization"),
+            0x00000020: ("EnableOrientationSmoother", "MTi-670(G)/680(G)/G-710", "Enable Orientation Smoother"),
+            0x00000040: ("EnableConfigurableBusId", "MTi 10/100/600-series", "Use configured BusId for Xbus"),
+            0x00000080: (
+                "EnableInRunCompassCalibration",
+                "MTi 1/10/100/600-series",
+                "Enable In-run Compass Calibration",
+            ),
+            0x00000200: (
+                "EnableConfigMessageAtStartup",
+                "MTi 1/600-series",
+                "Send eMTS and Config messages at startup",
+            ),
+            0x00000800: ("EnablePositionVelocitySmoother", "MTi-680(G)", "Enable Position/Velocity Smoother"),
+            0x00001000: ("EnableContinuousZRU", "MTi-680(G)", "Enable continuous Zero Rotation Updates"),
+        }
+
+        # List active flags with aligned formatting
+        active_flags = []
+        for flag_value, (name, products, description) in option_flags.items():
+            if current_flags & flag_value:
+                active_flags.append((name, products, description))
+
+        if active_flags:
+            lines = []
+            for name, products, description in active_flags:
+                product_str = f" ({products})" if products else ""
+                lines.append(f"    {name}: {description}{product_str}")
+            return '\n' + '\n'.join(lines)
+        else:
+            return "None"
+
     def try_message(m, f, formater=None, *args, **kwargs):
-        print(
-            '  %s ' % m,
-        )
+        print('  {:<35}'.format(m), end=' ')
         try:
             result = f(*args, **kwargs)
             if formater is not None:
                 print(formater(result))
             else:
-                pprint.pprint(result, indent=4)
+                if isinstance(result, (bytes, bytearray)):
+                    print(bytearray_fmt(result))
+                elif isinstance(result, tuple) and len(result) <= 4:
+                    # Format simple tuples nicely
+                    if len(result) == 2:
+                        print('({}, {})'.format(*result))
+                    elif len(result) == 3:
+                        print('({}, {}, {})'.format(*result))
+                    elif len(result) == 4:
+                        print('({}, {}, {}, {})'.format(*result))
+                    else:
+                        print(result)
+                else:
+                    pprint.pprint(result, indent=4)
         except MTErrorMessage as e:
             if e.code == 0x04:
-                print('message unsupported by your device.')
+                print('unsupported by device')
             else:
                 raise e
         except MTException as e:
             if "no-ack mode" in str(e).lower() or mt.no_ack:
-                print('N/A (no-ack mode - command sent but cannot read response)')
+                print('N/A (no-ack mode)')
             else:
                 raise e
 
-    print("Device: %s at %d Bd:" % (device, baudrate))
-    try_message("device ID:", mt.GetDeviceID, hex_fmt(8))
-    try_message("product code:", mt.GetProductCode)
-    try_message("firmware revision:", mt.GetFirmwareRev)
-    try_message("baudrate:", mt.GetBaudrate)
-    try_message("error mode:", mt.GetErrorMode, hex_fmt(2))
-    try_message("option flags:", mt.GetOptionFlags, hex_fmt())
-    try_message("location ID:", mt.GetLocationID, hex_fmt(2))
+    print("\n{}".format('=' * 60))
+    print("  Xsens MTi Device Information")
+    print("{}".format('=' * 60))
+    print("Device: {} at {:,} baud\n".format(device, baudrate))
 
-    # #TODO: Fix output formatting
-    try_message("CAN config", mt.GetCanConfig)
-    try_message("CAN output config", mt.GetCanOutputConfig)
-    try_message("GNSS Platform", mt.GetGnssPlatform)
-    try_message("GNSS Receiver", mt.GetGnssReceiver)
-    try_message("Hardware Version", mt.GetHardwareVersion)
-    try_message("Port Config", mt.GetPortConfig)
+    print("Device Information:")
+    try_message("Device ID:", mt.GetDeviceID, hex_fmt(8))
+    try_message("Product Code:", mt.GetProductCode)
+    try_message("Firmware Revision:", mt.GetFirmwareRev, firmware_fmt)
+    try_message("Hardware Version:", mt.GetHardwareVersion, hardware_version_fmt)
 
-    try_message("transmit delay:", mt.GetTransmitDelay)
-    try_message("synchronization settings:", mt.GetSyncSettings, sync_fmt)
-    try_message("general configuration:", mt.GetConfiguration)
-    try_message("output configuration (mark IV devices):", mt.GetOutputConfiguration, config_fmt)
-    try_message("string output type:", mt.GetStringOutputType)
-    try_message("period:", mt.GetPeriod)
-    try_message("alignment rotation sensor:", mt.GetAlignmentRotation, parameter=0)
-    try_message("alignment rotation local:", mt.GetAlignmentRotation, parameter=1)
-    try_message("output mode:", mt.GetOutputMode, hex_fmt(2))
-    try_message("extended output mode:", mt.GetExtOutputMode, hex_fmt(2))
-    try_message("output settings:", mt.GetOutputSettings, hex_fmt(4))
-    try_message("GPS coordinates (lat, lon, alt):", mt.GetLatLonAlt)
-    try_message("available scenarios:", mt.GetAvailableScenarios)
-    try_message("current scenario ID:", mt.GetCurrentScenario)
-    try_message("UTC time:", mt.GetUTCTime)
+    print("\nCommunication Settings:")
+    try_message("Current Baudrate:", mt.GetBaudrate, baudrate_fmt)
+    try_message("Port Configuration:", mt.GetPortConfig, port_config_fmt)
+    try_message("Option Flags:", mt.GetOptionFlags, option_flags_fmt)
+    try_message("Location ID:", mt.GetLocationID, hex_fmt(2))
+    try_message("Error Mode:", mt.GetErrorMode, hex_fmt(2))
+    try_message("Transmit Delay:", mt.GetTransmitDelay)
+
+    print("\nCAN Bus Configuration:")
+    try_message("CAN Config:", mt.GetCanConfig, can_config_fmt)
+    try_message("CAN Output Config:", mt.GetCanOutputConfig, can_output_config_fmt)
+
+    print("\nGNSS Configuration:")
+    try_message("GNSS Receiver Settings:", mt.GetGnssReceiverSettings, gnss_receiver_settings_fmt)
+    try_message("GNSS Lever Arm:", mt.GetGnssLeverArm, lever_arm_fmt)
+    try_message("GPS Coordinates:", mt.GetLatLonAlt, gps_coords_fmt)
+
+    print("\nOutput Configuration:")
+    try_message("Extended Output Mode:", mt.GetExtOutputMode, hex_fmt(2))
+    try_message("Output Configuration:", mt.GetOutputConfiguration, config_fmt)
+    try_message("String Output Type:", mt.GetStringOutputType)
+
+    print("\nSynchronization & Timing:")
+    try_message("Sync Settings:", mt.GetSyncSettings, sync_fmt)
+    try_message("UTC Time:", mt.GetUTCTime, utc_time_fmt)
+
+    print("\nOrientation & Scenarios:")
+    try_message("Alignment (Sensor):", mt.GetAlignmentRotation, parameter=0)
+    try_message("Alignment (Local):", mt.GetAlignmentRotation, parameter=1)
+    try_message("Available Scenarios:", mt.GetAvailableScenarios, scenario_fmt)
+    try_message("Current Scenario:", mt.GetCurrentScenario, current_scenario_fmt)
+
+    print("\n{}".format('=' * 60))
 
 
 def get_can_output_config(config_arg):
@@ -2007,7 +2601,7 @@ def get_can_output_config(config_arg):
         'gd': (0x7A, freqs_list[4]),
     }
 
-    config_re = re.compile('([a-z]{2})(\d+)?')
+    config_re = re.compile(r'([a-z]{2})(\d+)?')
     output_configuration = []
     try:
         for item in config_arg.split(','):
@@ -2065,7 +2659,7 @@ def get_output_config(config_arg):
     }
     # format flags
     format_dict = {'f': 0x00, 'd': 0x03, 'e': 0x00, 'n': 0x04, 'w': 0x08}
-    config_re = re.compile('([a-z]{2})(\d+)?([fdenw])?([fdnew])?')
+    config_re = re.compile(r'([a-z]{2})(\d+)?([fdenw])?([fdnew])?')
     output_configuration = []
     try:
         for item in config_arg.split(','):
@@ -2087,7 +2681,7 @@ def get_output_config(config_arg):
 
 
 def get_baudrate_config(baud_config):
-    config_re = re.compile('([xr])(\d+)([f]?)')
+    config_re = re.compile(r'([xr])(\d+)([f]?)')
     baud_configuration = {}
     try:
         for item in baud_config.split(','):
