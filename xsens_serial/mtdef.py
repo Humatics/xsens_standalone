@@ -15,6 +15,8 @@ class MID:
 
     # Error message, 1 data byte
     Error = 0x42
+    # Warning message
+    Warning = 0x43
 
     # State MID
     # Wake up procedure
@@ -56,10 +58,6 @@ class MID:
     RunSelftest = 0x24
     # Self test results, 2 bytes
     SelftestAck = 0x25
-    # Error mode, 2 bytes, 0000, 0001, 0002, 0003 (default 0001)
-    SetErrorMode = 0xDA
-    # Transmit delay (RS485), 2 bytes, number of clock ticks (1/29.4912 MHz)
-    SetTransmitDelay = 0xDC
     # Set state of OptionFlags (MTi-1/2/3), 4 + 4 bytes
     SetOptionFlags = 0x48
     # Location ID, 2 bytes, arbitrary, default is 0
@@ -341,12 +339,14 @@ class MTTimeoutException(MTException):
 
 class MTErrorMessage(MTException):
     ErrorCodes = {
-        0x03: 'Invalid period',
-        0x04: 'Invalid message',
-        0x1E: 'Timer overflow',
-        0x20: 'Invalid baudrate',
-        0x21: 'Invalid parameter',
-        0x28: 'Device error, try updating the firmware',
+        0x03: 'Period sent is not within valid range',
+        0x04: 'Message sent is invalid',
+        0x1E: 'Timer overflow. This can be caused by a too high output frequency or sending too much data to the MT during measurement',
+        0x20: 'Baud rate requested is not within valid range',
+        0x21: 'Parameter sent is invalid or not within range',
+        0x28: 'Device Error - try updating the firmware; extra device error contains 5 bytes',
+        0x29: 'Data overflow, the device generates more data than the bus communication can handle (baud rate may be too low)',
+        0x2A: 'Buffer overflow, the sample buffer of the device was full during a communication outage',
     }
 
     def __init__(self, code):
@@ -355,3 +355,63 @@ class MTErrorMessage(MTException):
 
     def __str__(self):
         return 'Error message 0x%02X: %s' % (self.code, self.message)
+
+
+class MTWarningMessage(MTException):
+    WarningCodes = {
+        0x0191: (
+            'A configuration item was refused by the GNSS receiver',
+            [
+                'The configured baud rate (see SetGnssReceiverSettings) is not supported by the GNSS receiver',
+                'The configured GNSS receiver model (see SetGnssReceiverSettings) does not match the connected GNSS receiver',
+            ],
+        ),
+        0x0192: (
+            'Communication with the GNSS receiver has timed out',
+            [
+                'No GNSS receiver connected',
+                'The configured GNSS receiver model (see SetGnssReceiverSettings) does not match the connected GNSS receiver',
+            ],
+        ),
+        0x0193: (
+            'Communication with the GNSS receiver failed',
+            [
+                'Generic GNSS receiver communication error; various root causes are possible. Please contact Xsens support for further troubleshooting'
+            ],
+        ),
+        0x0195: (
+            'Communication with the GNSS receiver was lost',
+            [
+                'The GNSS receiver stopped providing data, e.g. due to power loss',
+                'Disconnection of the data line(s) between the MTi and the GNSS receiver',
+            ],
+        ),
+        0x0197: (
+            'Incomplete dataset delivered by the GNSS receiver',
+            [
+                'The GNSS receiver is not sending at least one of the required input messages. Refer to your MTi product\'s datasheet for a list of required GNSS messages',
+                'The GNSS receiver\'s output rate is too low',
+            ],
+        ),
+    }
+
+    def __init__(self, code, description_string=""):
+        self.code = code
+        self.description_string = description_string
+        if code in self.WarningCodes:
+            self.description, self.possible_causes = self.WarningCodes[code]
+            self.message = f'{self.description}'
+        else:
+            self.description = f'Unknown warning: 0x{code:04X}'
+            self.possible_causes = []
+            self.message = self.description
+
+    def __str__(self):
+        result = f'Warning 0x{self.code:04X}: {self.description}'
+        if self.description_string:
+            result += f' - {self.description_string}'
+        if self.possible_causes:
+            result += f'\nPossible causes:\n'
+            for cause in self.possible_causes:
+                result += f'  - {cause}\n'
+        return result.rstrip()

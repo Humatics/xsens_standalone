@@ -19,6 +19,7 @@ from mtdef import (
     DeviceState,
     DeprecatedMID,
     MTErrorMessage,
+    MTWarningMessage,
     MTTimeoutException,
 )
 
@@ -174,6 +175,23 @@ class MTDevice(object):
                 )
             if mid == MID.Error:
                 raise MTErrorMessage(data[0])
+            elif mid == MID.Warning:
+                # Warning message format: uint32_t result_value + char string[128]
+                if length >= 4:
+                    result_value = struct.unpack('!I', buf[:4])[0]
+                    warning_string = ""
+                    if length > 4:
+                        # Extract string part, removing null terminators
+                        string_bytes = buf[4:-1]  # exclude checksum
+                        warning_string = string_bytes.decode('ascii', errors='ignore').rstrip('\x00')
+                    if self.verbose:
+                        print(f"MT: Warning received: {MTWarningMessage(result_value, warning_string)}")
+                    # Continue processing instead of raising an exception
+                else:
+                    if self.verbose:
+                        print("MT: Malformed warning message received")
+                # Don't return warning messages, continue reading next message
+                continue
             return (mid, buf[:-1])
         else:
             raise MTException("could not find message.")
@@ -416,34 +434,6 @@ class MTDevice(object):
         )
         self.write_msg(MID.SetPortConfig, data)
         return None
-
-    def GetErrorMode(self):
-        """Get the current error mode of the device."""
-        self._ensure_config_state()
-        data = self.write_ack(MID.SetErrorMode)
-        if self.no_ack:
-            if self.verbose:
-                print("  No-ACK mode: cannot read error mode")
-            return 0  # Return dummy value
-        (error_mode,) = struct.unpack('!H', data)
-        return error_mode
-
-    def SetErrorMode(self, error_mode):
-        """Set the error mode of the device.
-
-        The error mode defines the way the device deals with errors (expect
-        message errors):
-            0x0000: ignore any errors except message handling errors,
-            0x0001: in case of missing sampling instance: increase sample
-                counter and do not send error message,
-            0x0002: in case of missing sampling instance: increase sample
-                counter and send error message,
-            0x0003: in case of non-message handling error, an error message is
-                sent and the device will go into Config State.
-        """
-        self._ensure_config_state()
-        data = struct.pack('!H', error_mode)
-        self.write_ack(MID.SetErrorMode, data)
 
     def GetOptionFlags(self):
         """Get the option flags (MTi-1 series)."""
@@ -2537,7 +2527,6 @@ def inspect(mt, device, baudrate):
     try_message("Port Configuration:", mt.GetPortConfig, port_config_fmt)
     try_message("Option Flags:", mt.GetOptionFlags, option_flags_fmt)
     try_message("Location ID:", mt.GetLocationID, hex_fmt(2))
-    try_message("Error Mode:", mt.GetErrorMode, hex_fmt(2))
     try_message("Transmit Delay:", mt.GetTransmitDelay)
 
     print("\nCAN Bus Configuration:")
