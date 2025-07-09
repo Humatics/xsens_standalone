@@ -7,6 +7,7 @@ import time
 import glob
 import re
 import pprint
+import os
 
 from mtdef import (
     MID,
@@ -251,6 +252,151 @@ class MTDevice(object):
         else:
             self.state = DeviceState.Measurement
 
+    def ExportXSA(self, filename):
+        """
+        Queries the device for its complete configuration and exports it
+        to a .xsa file.
+        """
+        if not filename.endswith('.xsa'):
+            print(f"XSA file {filename} is not a valid XSA file")
+            return
+
+        print(f"Exporting settings to {filename}...")
+        self._ensure_config_state()
+
+        # This map defines which settings to export. It maps the .xsa name
+        # to the MID and the data required to request the setting.
+        # For most, an empty payload is sent to request the data.
+        # For some (like SetAlignmentRotation), a parameter is needed.
+        export_map = {
+            'AlignmentRotationLocal': (MID.SetAlignmentRotation, b'\x01'),
+            'AlignmentRotationSensor': (MID.SetAlignmentRotation, b'\x00'),
+            'CanConfig': (MID.SetCanConfig, b''),
+            'FilterProfile': (MID.SetCurrentScenario, b''),
+            'GnssLeverArm': (MID.SetGnssLeverArm, b''),
+            'GnssReceiverType': (MID.SetGnssReceiverSettings, b''),
+            'LatLonAlt': (MID.SetLatLonAlt, b''),
+            'LocationId': (MID.SetLocationID, b''),
+            'OptionFlags': (MID.SetOptionFlags, b''),
+            'OutputConfiguration': (MID.SetOutputConfiguration, b''),
+            'PortConfig': (MID.SetPortConfig, b''),
+            'SyncConfiguration': (MID.SetSyncSettings, b''),
+        }
+
+        with open(filename, 'w') as f:
+            # Write file header
+            f.write("; XSA file created by MTDevice Python client\n")
+            f.write(f"; Exported on: {time.ctime()}\n")
+
+            # Write Info section
+            try:
+                fw_rev = self.GetFirmwareRev()
+                f.write(f"Info.FirmwareVersion=S:{fw_rev[0]}.{fw_rev[1]}.{fw_rev[2]}\n")
+                prod_code = self.GetProductCode()
+                f.write(f"Info.ProductCode=S:{prod_code}\n")
+            except MTException as e:
+                print(f"Warning: Could not get device info: {e}")
+
+            # Write Config section
+            for name, (mid, req_data) in export_map.items():
+                try:
+                    # Get the configuration data from the device
+                    ack_data = self.write_ack(mid, req_data)
+                    data_payload_for_file = ack_data  # default assumption
+
+                    # Handle the special case for OptionFlags
+                    if name == 'OptionFlags':
+                        # The SetOptionFlags message requires an 8-byte payload:
+                        # 4 bytes for set_flags, 4 bytes for clear_flags.
+                        # The ack_data is only the current 4-byte state.
+                        # To create a valid "set" message, we use the current state
+                        # as the 'Set Mask' and provide an empty 'Clear Mask'.
+                        set_mask = ack_data
+                        clear_mask = b'\x00\x00\x00\x00'
+                        data_payload_for_file = set_mask + clear_mask
+
+                    # Construct the full message that would be sent to set this value
+                    length = len(data_payload_for_file)
+                    if length > 254:
+                        lendat = b'\xff' + struct.pack('!H', length)
+                    else:
+                        lendat = struct.pack('!B', length)
+
+                    # Reconstruct the Xbus message format for the .xsa file
+                    # This packet doesn't actually get sent, just formatted
+                    packet_core = b'\xfa\xff' + struct.pack('!B', mid) + lendat + data_payload_for_file
+                    checksum_val = 0xFF & (-(sum(packet_core[1:])))
+                    checksum = struct.pack('!B', checksum_val)
+                    full_message = packet_core + checksum
+
+                    hex_string = full_message.hex().upper()
+                    f.write(f"Config.{name}=N:{len(full_message)}:{hex_string}\n")
+                    if self.verbose:
+                        print(f"  Successfully exported {name}")
+
+                except MTException as e:
+                    if self.verbose:
+                        print(f"  Could not export {name}: {e}")
+        print("Export complete.")
+
+    def ImportXSA(self, filename):
+        """
+        Imports and applies settings from a .xsa file to the device.
+        """
+        if not os.path.exists(filename):
+            print(f"XSA file {filename} does not exist")
+            return
+        if not filename.endswith('.xsa'):
+            print(f"XSA file {filename} is not a valid XSA file")
+            return
+
+        print(f"Importing settings from {filename}...")
+        self._ensure_config_state()
+
+        with open(filename, 'r') as f:
+            for line in f:
+                # Match lines starting with "Config."
+                match = re.match(r'Config\.(.+)=N:\d+:(.+)', line)
+                if not match:
+                    continue
+
+                setting_name, hex_data = match.groups()
+                hex_data = hex_data.strip()
+                try:
+                    # Convert the full hex message from the file into bytes
+                    full_message_bytes = bytes.fromhex(hex_data)
+
+                    # Deconstruct the message to get the MID and data payload
+                    # Format: FA FF MID LEN [Extended_LEN] DATA CS
+                    if len(full_message_bytes) < 5:
+                        print(f"    Skipping malformed message for {setting_name}")
+                        continue
+
+                    mid = full_message_bytes[2]
+                    length = full_message_bytes[3]
+                    offset = 4
+                    if length == 255:  # Extended length
+                        (length,) = struct.unpack('!H', full_message_bytes[4:6])
+                        offset = 6
+
+                    data_payload = full_message_bytes[offset:-1]
+
+                    # Send the configuration command with its data payload
+                    self.write_ack(mid, data_payload)
+                    print(f"    Successfully applied {setting_name}")
+
+                except ValueError:
+                    print(f"    ERROR: Invalid hexadecimal data for {setting_name}")
+                except MTException as e:
+                    print(f"    ERROR applying {setting_name}: {e}")
+
+        print("Import complete. Resetting device to apply settings.")
+        self.Reset()
+        self.device.flush()
+        time.sleep(0.01)
+        self.read_msg()
+        self.write_msg(MID.WakeUpAck)
+
     def GoToConfig(self):
         """Place MT device in configuration mode."""
         self.write_ack(MID.GoToConfig)
@@ -475,10 +621,6 @@ class MTDevice(object):
         self._ensure_config_state()
         self.write_ack(MID.RestoreFactoryDef)
         self.Reset()
-        self.device.flush()
-        time.sleep(0.01)
-        self.read_msg()
-        self.write_msg(MID.WakeUpAck)
 
     def GetTransmitDelay(self):
         """Get the transmission delay (only RS485)."""
@@ -1723,6 +1865,8 @@ def main():
     lopts = [
         'help',
         'reset',
+        'import-xsa=',
+        'export-xsa=',
         'change-baudrate=',
         'configure=',
         'cb=',
@@ -1755,6 +1899,7 @@ def main():
     period = None
     skipfactor = None
     new_xkf = None
+    xsa_file = None
     actions = []
     verbose = False
     no_ack = False
@@ -1842,6 +1987,12 @@ def main():
                 print("gnss-lever-arm argument must be in the format X,Y,Z (float)")
                 return 1
             actions.append('gnss-lever-arm')
+        elif o in ('--import-xsa'):
+            xsa_file = a
+            actions.append('import-xsa')
+        elif o in ('--export-xsa'):
+            xsa_file = a
+            actions.append('export-xsa')
     # if nothing else: echo
     if len(actions) == 0:
         actions.append('echo')
@@ -1892,6 +2043,16 @@ def main():
             print("Restoring factory defaults")
             sys.stdout.flush()
             mt.RestoreFactoryDefaults()
+            print(" Ok")  # should we test that it was actually ok?
+        if 'import-xsa' in actions:
+            print("Importing XSA file")
+            sys.stdout.flush()
+            mt.ImportXSA(xsa_file)
+            print(" Ok")  # should we test that it was actually ok?
+        if 'export-xsa' in actions:
+            print("Exporting XSA file")
+            sys.stdout.flush()
+            mt.ExportXSA(xsa_file)
             print(" Ok")  # should we test that it was actually ok?
         if 'configure' in actions:
             print("Changing output configuration")
@@ -2332,6 +2493,8 @@ def inspect(mt, device, baudrate):
                 if msg_type in no_frequency_types:
                     if frequency == 1:
                         freq_str = 'Enabled'
+                    else:
+                        freq_str = 'Disabled'
                 else:
                     # Format frequency for configurable message types
                     if frequency == 0x07FF:
@@ -2549,7 +2712,7 @@ def inspect(mt, device, baudrate):
     try_message("Current Baudrate:", mt.GetBaudrate, baudrate_fmt)
     try_message("Port Configuration:", mt.GetPortConfig, port_config_fmt)
     try_message("Option Flags:", mt.GetOptionFlags, option_flags_fmt)
-    try_message("Location ID:", mt.GetLocationID, hex_fmt(2))
+    try_message("Location ID:", mt.GetLocationID)
     try_message("Transmit Delay:", mt.GetTransmitDelay)
 
     print("\nCAN Bus Configuration:")
