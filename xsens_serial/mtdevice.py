@@ -1600,7 +1600,7 @@ def find_devices(verbose=False):
 # Auto detect baudrate
 ################################################################
 def find_baudrate(port, verbose=False):
-    baudrates = [20000000, 916200, 460800, 230400, 115200, 57600, 38400, 19200, 9600, 4800]
+    baudrates = [2000000, 115200, 916200, 460800, 230400, 57600, 38400, 19200, 9600, 4800]
 
     for br in baudrates:
         if verbose:
@@ -1893,7 +1893,7 @@ def main():
         return 1
     # default values
     device = '/dev/ttyUSB0'
-    baudrate = 115200
+    baudrate = None
     mode = None
     settings = None
     period = None
