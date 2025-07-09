@@ -62,6 +62,8 @@ class MID:
     SetOptionFlags = 0x48
     # Location ID, 2 bytes, arbitrary, default is 0
     SetLocationID = 0x84
+    # Set transmit delay (RS485 only), 2 bytes
+    SetTransmitDelay = 0xDC
 
     # Synchronization messages
     # Synchronization settings (MTi-1/10/100 series only), N*12 bytes
@@ -72,7 +74,6 @@ class MID:
     ReqConfiguration = 0x0C
     # Configuration, 118 bytes
     Configuration = 0x0D
-    # Sampling period (MTi/MTi-G only), 2 bytes
     # Extended output mode (MTi-10/100), 2 bytes, bit 4 for extended UART
     SetExtOutputMode = 0x86
     # Output configuration (MTi-1/10/100 series only), N*4 bytes
@@ -81,8 +82,7 @@ class MID:
     SetStringOutputType = 0x8E
     # Set sensor of local alignment quaternion
     SetAlignmentRotation = 0xEC
-    # Output mode (MTi/MTi-G only), 2 bytes
-    # Output settings (MTi/MTi-G only), 4 bytes
+
 
     # Data messages
     # Request MTData message (for 65535 skip factor)

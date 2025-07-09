@@ -416,10 +416,7 @@ class MTDevice(object):
 
     def SetPortConfig(self, xbus_brid, xbus_flow, rtcm_brid):
         """Set the baudrate of the device using the baudrate id."""
-        # Ignore config state
-        """Place MT device in configuration mode."""
-        self.write_msg(MID.GoToConfig)
-        self.state = DeviceState.Config
+        self._ensure_config_state()
         data = struct.pack(
             '!HBBHBBHBB',
             MID.XbuxInterface,
@@ -432,8 +429,7 @@ class MTDevice(object):
             0x00,
             rtcm_brid,
         )
-        self.write_msg(MID.SetPortConfig, data)
-        return None
+        self.write_ack(MID.SetPortConfig, data)
 
     def GetOptionFlags(self):
         """Get the option flags (MTi-1 series)."""
@@ -478,6 +474,11 @@ class MTDevice(object):
         """Restore MT device configuration to factory defaults (soft version)."""
         self._ensure_config_state()
         self.write_ack(MID.RestoreFactoryDef)
+        self.Reset()
+        self.device.flush()
+        time.sleep(0.01)
+        self.read_msg()
+        self.write_msg(MID.WakeUpAck)
 
     def GetTransmitDelay(self):
         """Get the transmission delay (only RS485)."""
@@ -774,7 +775,7 @@ class MTDevice(object):
     def SetGnssLeverArm(self, x, y, z):
         """Set the lever arm of the GNSS receiver."""
         self._ensure_config_state()
-        data = struct.pack('!ddd', x, y, z)
+        data = struct.pack('!fff', x, y, z)
         self.write_ack(MID.SetGnssLeverArm, data)
 
     def GetAvailableScenarios(self):
@@ -1408,10 +1409,16 @@ class MTDevice(object):
 
     def ChangeBaudrate(self, xbus_baud, xbus_flow, rtcm_baud):
         """Change the baudrate, reset the device and reopen communication."""
-        # current_xbus_baud, current_xbus_flow, current_rtcm_baud = self.GetPortConfig()
-        current_xbus_baud = "115200"
-        current_xbus_flow = 0
-        current_rtcm_baud = "38400"
+        # Get current configuration for reference
+        try:
+            current_xbus_baud, current_xbus_flow, current_rtcm_baud = self.GetPortConfig()
+        except (MTException, MTTimeoutException):
+            # If we can't read current config, use defaults
+            current_xbus_baud = 115200
+            current_xbus_flow = 0
+            current_rtcm_baud = 38400
+
+        # Use current values if new values not provided
         if xbus_baud is None:
             xbus_baud = current_xbus_baud
             xbus_flow = current_xbus_flow
@@ -1422,9 +1429,9 @@ class MTDevice(object):
         rtcm_brid = Baudrates.get_BRID(rtcm_baud)
         self.SetPortConfig(xbus_brid, xbus_flow, rtcm_brid)
         self.Reset()
-        # self.device.flush()
+        self.device.flush()
         self.device.baudrate = xbus_baud
-        # self.device.flush()
+        self.device.flush()
         time.sleep(0.01)
         self.read_msg()
         self.write_msg(MID.WakeUpAck)
@@ -1517,7 +1524,7 @@ Commands:
     -l, --legacy-configure
         Configure the device in legacy mode (needs MODE and SETTINGS arguments
         below).
-    -g, --gnss-lever-arm=X,Y,Z
+    --gnss-lever-arm=X,Y,Z
         Set the lever arm of the GNSS receiver.
     -v, --verbose
         Verbose output.
@@ -1897,7 +1904,7 @@ def main():
             mt.SetCanConfig(new_can_baudrate)
             print(" Ok")  # should we test that it was actually ok?
         if 'can-configure' in actions:
-            print("Changing output configuration")
+            print("Changing output can configuration")
             sys.stdout.flush()
             mt.SetCanOutputConfig(can_output_config)
             print(" Ok")  # should we test that it was actually ok?
@@ -2290,6 +2297,16 @@ def inspect(mt, device, baudrate):
             0x7A: 'GNSS DOP',
         }
 
+        # Message types that are enable/disable only (no configurable frequency)
+        no_frequency_types = {
+            0x01,
+            0x02,
+            0x05,
+            0x06,
+            0x07,
+            0x11,
+        }  # Error, Warning, SampleTime, GroupCounter, UTC Time, Status Word
+
         # Parse configured messages
         configured_messages = {}
         if isinstance(data, (bytes, bytearray)) and len(data) >= 8:
@@ -2310,15 +2327,21 @@ def inspect(mt, device, baudrate):
 
             if msg_type in configured_messages:
                 frequency = configured_messages[msg_type]
-                # Format frequency
-                if frequency == 0x07FF:
-                    freq_str = 'Max freq'
-                elif frequency == 0xFFFF:
-                    freq_str = 'On change'
-                elif frequency == 0:
-                    freq_str = 'Disabled'
+
+                # Handle message types that are enable/disable only
+                if msg_type in no_frequency_types:
+                    if frequency == 1:
+                        freq_str = 'Enabled'
                 else:
-                    freq_str = f'{frequency} Hz'
+                    # Format frequency for configurable message types
+                    if frequency == 0x07FF:
+                        freq_str = 'Max freq'
+                    elif frequency == 0xFFFF:
+                        freq_str = 'On change'
+                    elif frequency == 0:
+                        freq_str = 'Disabled'
+                    else:
+                        freq_str = f'{frequency} Hz'
             else:
                 freq_str = 'Disabled'
 
@@ -2601,7 +2624,6 @@ def get_can_output_config(config_arg):
             else:
                 frequency = freqs[0]
             output_configuration.append((code, 0, 0, frequency))
-            pprint.pprint(output_configuration)
         return output_configuration
     except (IndexError, KeyError):
         print('could not parse output specification "%s"' % item)
