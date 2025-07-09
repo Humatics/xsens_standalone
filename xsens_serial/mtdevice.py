@@ -309,10 +309,10 @@ class MTDevice(object):
                         # The SetOptionFlags message requires an 8-byte payload:
                         # 4 bytes for set_flags, 4 bytes for clear_flags.
                         # The ack_data is only the current 4-byte state.
-                        # To create a valid "set" message, we use the current state
-                        # as the 'Set Mask' and provide an empty 'Clear Mask'.
-                        set_mask = ack_data
-                        clear_mask = b'\x00\x00\x00\x00'
+                        # To recreate the exact flag state, we clear all flags first,
+                        # then set only the desired flags.
+                        set_mask = ack_data  # The flags we want to set
+                        clear_mask = b'\xff\xff\xff\xff'  # Clear all flags first
                         data_payload_for_file = set_mask + clear_mask
 
                     # Construct the full message that would be sent to set this value
