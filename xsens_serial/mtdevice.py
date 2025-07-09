@@ -2110,103 +2110,119 @@ def inspect(mt, device, baudrate):
     """Inspection."""
 
     def config_fmt(config):
-        """Enhanced output configuration with XDI decoding."""
-        if not config:
-            return '[]'
-
-        # XDI (Xsens Data Identifier) mapping based on MTi documentation
-        xdi_map = {
-            # Temperature
-            0x0810: 'Temperature',
-            # Timestamp group (0x1xxx)
-            0x1010: 'Packet Counter',
-            0x1020: 'Sample Time Fine',
-            0x1030: 'Sample Time Coarse',
-            0x1060: 'UTC Time',
-            0x1070: 'Frame Range',
-            0x1080: 'Packet Counter 8',
-            # Orientation group (0x2xxx)
-            0x2010: 'Quaternion (Float)',
-            0x2020: 'Rotation Matrix (Float)',
-            0x2030: 'Euler Angles (Float)',
-            0x2012: 'Quaternion (Fixed)',
-            0x2022: 'Rotation Matrix (Fixed)',
-            0x2032: 'Euler Angles (Fixed)',
-            # Pressure group (0x3xxx)
-            0x3010: 'Barometric Pressure',
-            # Acceleration group (0x4xxx)
-            0x4010: 'Delta V',
-            0x4020: 'Acceleration',
-            0x4030: 'Free Acceleration',
-            0x4040: 'Acceleration HR',
-            # Position group (0x5xxx)
-            0x5020: 'Altitude MSL',
-            0x5030: 'Altitude Ellipsoid',
-            0x5040: 'Position ECEF',
-            0x5042: 'Lat/Lon',
-            # GNSS group (0x7xxx)
-            0x7010: 'GNSS PVT Data',
-            0x7020: 'GNSS Satellites Info',
-            # Angular velocity group (0x8xxx)
-            0x8020: 'Rate of Turn',
-            0x8030: 'Delta Q',
-            0x8040: 'Rate of Turn HR',
-            0x8830: 'GNSS DOP',
-            0x8840: 'GNSS Sol',
-            0x8880: 'GNSS Time UTC',
-            0x88A0: 'GNSS Sv Info',
-            # Raw sensor group (0xAxxx)
-            0xA010: 'Raw Acc Gyr Mag Temp',
-            0xA020: 'Raw Gyro Temp',
-            # Magnetic group (0xCxxx)
-            0xC020: 'Magnetic Field',
-            # Velocity group (0xDxxx)
-            0xD010: 'Velocity XYZ',
-            0xD012: 'Velocity NED',
-            # Status group (0xExxx)
-            0xE010: 'Status Byte',
-            0xE020: 'Status Word',
+        """Enhanced output configuration with XDI decoding, showing all possible outputs for MTi-680G."""
+        # Base XDI types supported by MTi-680G with their max frequencies
+        base_xdi_types = {
+            # Temperature (MTi 600-s: 100 Hz)
+            0x0810: ('Temperature', 100, False),
+            # Timestamp group (always with data, frequency ignored)
+            0x1010: ('UTC Time', 'Always', False),
+            0x1020: ('Packet Counter', 'Always', False),
+            0x1060: ('Sample Time Fine', 'Always', False),
+            0x1070: ('Sample Time Coarse', 'Always', False),
+            # Orientation group (400 Hz max, supports format flags)
+            0x2010: ('Quaternion', 400, True),
+            0x2020: ('Rotation Matrix', 400, True),
+            0x2030: ('Euler Angles', 400, True),
+            # Pressure (50 Hz max for MTi-680G)
+            0x3010: ('Baro Pressure', 50, False),
+            # Acceleration (400 Hz max, supports format flags)
+            0x4010: ('Delta V', 400, True),
+            0x4020: ('Acceleration', 400, True),
+            0x4030: ('Free Acceleration', 400, True),
+            0x4040: ('AccelerationHR', 'Variable', True),  # Device dependent
+            # Position (400 Hz max, supports format flags)
+            0x5020: ('Altitude Ellipsoid', 400, True),
+            0x5030: ('Position ECEF', 400, True),
+            0x5040: ('LatLon', 400, True),
+            # GNSS (4 Hz max)
+            0x7010: ('GNSS PVT Data', 4, False),
+            0x7020: ('GNSS Satellites Info', 4, False),
+            0x7030: ('GNSS PVT Pulse', 4, False),
+            # Angular Velocity (400 Hz max, supports format flags)
+            0x8020: ('Rate of Turn', 400, True),
+            0x8030: ('Delta Q', 400, True),
+            0x8040: ('RateOfTurnHR', 'Variable', True),  # Device dependent
+            # Magnetic (100 Hz max, supports format flags)
+            0xC020: ('Magnetic Field', 100, True),
+            # Velocity (400 Hz max, supports format flags)
+            0xD010: ('Velocity XYZ', 400, True),
+            # Status (always with data, frequency ignored)
+            0xE010: ('Status Byte', 'Always', False),
+            0xE020: ('Status Word', 'Always', False),
         }
 
-        lines = []
-        for mode, freq in config:
-            # Extract base XDI (remove format/coordinate flags)
-            base_xdi = mode & 0xFFF0
-            if base_xdi == 0:
-                base_xdi = mode & 0xFF00
+        # Format mappings for XDI identifiers
+        precision_formats = {0x0: 'Float32', 0x1: 'Fp1220', 0x2: 'Fp1632', 0x3: 'Float64'}
 
-            # Try to find the identifier
-            name = xdi_map.get(mode) or xdi_map.get(base_xdi) or f'Unknown XDI (0x{mode:04X})'
+        coordinate_systems = {0x0: 'ENU', 0x4: 'NED', 0x8: 'NWU'}
 
-            # Add format/coordinate info if applicable
-            format_flags = mode & 0x000F
-            if format_flags:
-                format_info = []
-                if format_flags & 0x0003 == 0x0000:
-                    format_info.append('Float')
-                elif format_flags & 0x0003 == 0x0003:
-                    format_info.append('Double')
-                elif format_flags & 0x0003 == 0x0001:
-                    format_info.append('Fixed12.20')
-                elif format_flags & 0x0003 == 0x0002:
-                    format_info.append('Fixed16.32')
+        # Parse configured messages into a dictionary
+        configured_messages = {}
+        if config:
+            for mode, freq in config:
+                configured_messages[mode] = freq
 
-                if format_flags & 0x0004:
-                    format_info.append('NED')
-                elif format_flags & 0x0008:
-                    format_info.append('NWU')
+        # Start with base XDI types
+        all_display_xdis = {}
+        for base_xdi, (name, max_freq, supports_format) in base_xdi_types.items():
+            all_display_xdis[base_xdi] = (name, max_freq)
+
+        # Add any configured XDIs with their specific format variants
+        for configured_xdi in configured_messages.keys():
+            base_xdi = configured_xdi & 0xFFF0
+            if base_xdi in base_xdi_types:
+                name, max_freq, supports_format = base_xdi_types[base_xdi]
+                format_flags = configured_xdi & 0x000F
+
+                if supports_format and format_flags:
+                    format_parts = []
+                    precision = format_flags & 0x3
+                    coord = format_flags & 0xC
+
+                    if precision in precision_formats:
+                        format_parts.append(precision_formats[precision])
+                    if coord in coordinate_systems:
+                        format_parts.append(coordinate_systems[coord])
+
+                    if format_parts:
+                        formatted_name = f"{name} ({', '.join(format_parts)})"
+                    else:
+                        formatted_name = name
                 else:
-                    format_info.append('ENU')
+                    formatted_name = name
 
-                if format_info:
-                    name += f' ({", ".join(format_info)})'
+                # Replace the base entry with the specifically configured variant
+                all_display_xdis[configured_xdi] = (formatted_name, max_freq)
+                # Remove the base entry if it's different from the configured one
+                if configured_xdi != base_xdi and base_xdi in all_display_xdis:
+                    del all_display_xdis[base_xdi]
+            else:
+                # Unknown XDI
+                all_display_xdis[configured_xdi] = (f'Unknown XDI (0x{configured_xdi:04X})', 'Unknown')
 
-            lines.append(f'    {name:<35} | {freq:>6} Hz | 0x{mode:04X}')
+        # Create table rows
+        configs = []
+        for xdi in sorted(all_display_xdis.keys()):
+            name, max_freq = all_display_xdis[xdi]
 
-        header = f'    {"Message Type":<35} | {"Freq":<6} | {"XDI"}'
-        separator = f'    {"-" * 35}-+-{"-" * 6}-+-{"-" * 6}'
+            if xdi in configured_messages:
+                frequency = configured_messages[xdi]
+                if frequency == 0xFFFF or frequency == 0:
+                    freq_str = 'Max freq'
+                elif max_freq == 'Always':
+                    freq_str = 'Always'
+                else:
+                    freq_str = f'{frequency} Hz'
+            else:
+                freq_str = 'Disabled'
 
-        return '\n' + header + '\n' + separator + '\n' + '\n'.join(lines)
+            configs.append(f'    {name:<35} | {freq_str:>10}')
+
+        # Add header for the table
+        header = f'    {"Message Type":<35} | {"Frequency":>10}'
+        separator = f'    {"-" * 35}-+-{"-" * 10}'
+        return '\n' + header + '\n' + separator + '\n' + '\n'.join(configs)
 
     def hex_fmt(size=4):
         """Factory for hexadecimal representation formatter."""
