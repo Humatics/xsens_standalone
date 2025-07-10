@@ -2,7 +2,7 @@
 import serial
 import struct
 import sys
-import getopt
+import argparse
 import time
 import glob
 import re
@@ -1629,174 +1629,127 @@ def find_baudrate(port, verbose=False):
 
 
 ################################################################
-# Documentation for stand alone usage
+# Argument parser setup
 ################################################################
-def usage():
-    print("""MT device driver.
-Usage:
-    ./mtdevice.py [commands] [opts]
-
-Commands:
-    -h, --help
-        Print this help and quit.
-    -r, --reset
-        Reset device to factory defaults.
-    -a, --change-baudrate=BAUD_CONFIG
-        Change baudrate:
-        The format is a sequence of "<interface><frequency><flow_control_off>?"
-        separated by commas.
-        The flow_control is optional and only applies to XBus.
-        The interface can be:
-            x   XBus
-            r   RTCM
-        ex: -a x115200f,r38400
-            sets XBus to 115200 baud without flow_control and RTCM to 38400 baud
-    -c, --configure=OUTPUT
-        Configure the device (see OUTPUT description below).
-    --cb=NEW_CAN_BAUD
-        Change CAN baudrate to NEW_CAN_BAUD, set NEW_CAN_BAUD to 0 to disable CAN
-    --cc=CAN_OUTPUT
-        Configure the can output (see CAN_OUTPUT description below).
-    -e, --echo
-        Print MTData. It is the default if no other command is supplied.
-    -i, --inspect
-        Print current MT device configuration.
-    -x, --xkf-scenario=ID
-        Change the current XKF scenario.
-    -l, --legacy-configure
-        Configure the device in legacy mode (needs MODE and SETTINGS arguments
-        below).
-    --gnss-lever-arm=X,Y,Z
-        Set the lever arm of the GNSS receiver.
-    -v, --verbose
-        Verbose output.
-    -n, --no-ack
-        No-acknowledgment mode: send commands without waiting for responses.
-        Use this when you can send messages but cannot receive them.
-
-Generic options:
-    -d, --device=DEV
-        Serial interface of the device (default: /dev/ttyUSB0). If 'auto', then
-        all serial ports are tested at all baudrates and the first
-        suitable device is used.
-    -b, --baudrate=BAUD
-        Baudrate of serial interface (default: 115200). If 0, then all
-        rates are tried until a suitable one is found.
-
-Configuration option:
-    OUTPUT
-        The format is a sequence of "<group><type><frequency>?<format>?"
-        separated by commas.
-        The frequency and format are optional.
-        The groups and types can be:
-            t  temperature (max frequency: 1 Hz):
-                tt  temperature
-            i  timestamp (max frequency: 2000 Hz):
-                iu  UTC time
-                ip  packet counter
-                ii  Integer Time of the Week (ITOW)
-                if  sample time fine
-                ic  sample time coarse
-                ir  frame range
-            o  orientation data (max frequency: 400 Hz):
-                oq  quaternion
-                om  rotation matrix
-                oe  Euler angles
-            b  pressure (max frequency: 50 Hz):
-                bp  baro pressure
-            a  acceleration (max frequency: 2000 Hz (see documentation)):
-                ad  delta v
-                aa  acceleration
-                af  free acceleration
-                ah  acceleration HR (max frequency 1000 Hz)
-            p  position (max frequency: 400 Hz):
-                pa  altitude ellipsoid
-                pp  position ECEF
-                pl  latitude longitude
-            n  GNSS (max frequency: 4 Hz):
-                np  GNSS PVT data
-                ns  GNSS satellites info
-            w  angular velocity (max frequency: 2000 Hz (see documentation)):
-                wr  rate of turn
-                wd  delta q
-                wh  rate of turn HR (max frequency 1000 Hz)
-            g  GPS (max frequency: 4 Hz):
-                gd  DOP
-                gs  SOL
-                gu  time UTC
-                gi  SV info
-            r  Sensor Component Readout (max frequency: 2000 Hz):
-                rr  ACC, GYR, MAG, temperature
-                rt  Gyro temperatures
-            m  Magnetic (max frequency: 100 Hz):
-                mf  magnetic Field
-            v  Velocity (max frequency: 400 Hz):
-                vv  velocity XYZ
-            s  Status (max frequency: 2000 Hz):
-                sb  status byte
-                sw  status word
-        Frequency is specified in decimal and is assumed to be the maximum
-        frequency if it is omitted.
-        Format is a combination of the precision for real valued numbers and
+def setup_argument_parser():
+    """Set up and return the argument parser."""
+    parser = argparse.ArgumentParser(
+        description='MT device driver.',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog='''
+OUTPUT
+    The format is a sequence of "<group><type><frequency>?<format>?"
+    separated by commas.
+    The frequency and format are optional.
+    The groups and types can be:
+        t  temperature (max frequency: 1 Hz):
+            tt  temperature
+        i  timestamp (max frequency: 2000 Hz):
+            iu  UTC time
+            ip  packet counter
+            ii  Integer Time of the Week (ITOW)
+            if  sample time fine
+            ic  sample time coarse
+            ir  frame range
+        o  orientation data (max frequency: 400 Hz):
+            oq  quaternion
+            om  rotation matrix
+            oe  Euler angles
+        b  pressure (max frequency: 50 Hz):
+            bp  baro pressure
+        a  acceleration (max frequency: 2000 Hz (see documentation)):
+            ad  delta v
+            aa  acceleration
+            af  free acceleration
+            ah  acceleration HR (max frequency 1000 Hz)
+        p  position (max frequency: 400 Hz):
+            pa  altitude ellipsoid
+            pp  position ECEF
+            pl  latitude longitude
+        n  GNSS (max frequency: 4 Hz):
+            np  GNSS PVT data
+            ns  GNSS satellites info
+        w  angular velocity (max frequency: 2000 Hz (see documentation)):
+            wr  rate of turn
+            wd  delta q
+            wh  rate of turn HR (max frequency 1000 Hz)
+        g  GPS (max frequency: 4 Hz):
+            gd  DOP
+            gs  SOL
+            gu  time UTC
+            gi  SV info
+        r  Sensor Component Readout (max frequency: 2000 Hz):
+            rr  ACC, GYR, MAG, temperature
+            rt  Gyro temperatures
+        m  Magnetic (max frequency: 100 Hz):
+            mf  magnetic Field
+        v  Velocity (max frequency: 400 Hz):
+            vv  velocity XYZ
+        s  Status (max frequency: 2000 Hz):
+            sb  status byte
+            sw  status word
+    Frequency is specified in decimal and is assumed to be the maximum
+    frequency if it is omitted.
+    Format is a combination of the precision for real valued numbers and
+    coordinate system:
+        precision:
+            f  single precision floating point number (32-bit) (default)
+            d  double precision floating point number (64-bit)
         coordinate system:
-            precision:
-                f  single precision floating point number (32-bit) (default)
-                d  double precision floating point number (64-bit)
-            coordinate system:
-                e  East-North-Up (default)
-                n  North-East-Down
-                w  North-West-Up
-        Examples:
-            The default configuration for the MTi-1/10/100 IMUs can be
-            specified either as:
-                "wd,ad,mf,ip,if,sw"
-            or
-                "wd2000fe,ad2000fe,mf100fe,ip2000,if2000,sw2000"
-            For getting quaternion orientation in float with sample time:
-                "oq400fw,if2000"
-            For longitude, latitude, altitude and orientation (on MTi-G-700):
-                "pl400fe,pa400fe,oq400fe"
-    CAN_OUTPUT
-        The format is a sequence of "<group><type><frequency>?"
-        separated by commas. The frequency is optional.
-            t  Timestamp:
-                ts  SampleTime
-                tu  UTC Time
-                tg  GroupCounter
-            s  Status:
-                ss  Status Word
-                se  Error
-                sw  Warning
-            o  Orientation data (max frequency: 400 Hz):
-                oq  Quaternion
-                oe  Euler Angles
-            i  Inertial data (max frequency: 400 Hz):
-                iq  DeltaQ
-                iv  DeltaV
-                if  Free Acceleration
-                ir  Rate of Turn
-                ia  Acceleration
-            m  Magentic Field data (max frequency: 100 Hz):
-                mm  Magnetic Field
-            f  Temperature data (max frequency: 400 Hz):
-                ft  Temperature
-            b  Pressure data (max frequency: 100 Hz):
-                bp  Barometric Pressure
-            h  High-Rate data
-                ha  Accekeration HR (max frequency: 2000 Hz)
-                hr  Rate of Turn HR (max frequency: 1600 Hz)
-            p  Position and Velocity data (max frequency: 400 Hz):
-                pl  Latitude and Longitude
-                pv  Velocity
-                pa  Altitude Ellipsoid
-            g  GNSS data
-                gs  GNSS receiver status
-                gd  GNSS receiver DOP
-        Frequency is specified in decimal and is assumed to be the maximum
-        frequency if it is omitted.
-        Example:
-            The default configuration for Focus Mti680G can be specified as:
-                "se,sw,ts,tg,tu,ss,oq400,iv400,ir,iq,ia,pl400,pv,pa,gd,gs"
+            e  East-North-Up (default)
+            n  North-East-Down
+            w  North-West-Up
+    Examples:
+        The default configuration for the MTi-1/10/100 IMUs can be
+        specified either as:
+            "wd,ad,mf,ip,if,sw"
+        or
+            "wd2000fe,ad2000fe,mf100fe,ip2000,if2000,sw2000"
+        For getting quaternion orientation in float with sample time:
+            "oq400fw,if2000"
+        For longitude, latitude, altitude and orientation (on MTi-G-700):
+            "pl400fe,pa400fe,oq400fe"
+CAN_OUTPUT
+    The format is a sequence of "<group><type><frequency>?"
+    separated by commas. The frequency is optional.
+        t  Timestamp:
+            ts  SampleTime
+            tu  UTC Time
+            tg  GroupCounter
+        s  Status:
+            ss  Status Word
+            se  Error
+            sw  Warning
+        o  Orientation data (max frequency: 400 Hz):
+            oq  Quaternion
+            oe  Euler Angles
+        i  Inertial data (max frequency: 400 Hz):
+            iq  DeltaQ
+            iv  DeltaV
+            if  Free Acceleration
+            ir  Rate of Turn
+            ia  Acceleration
+        m  Magentic Field data (max frequency: 100 Hz):
+            mm  Magnetic Field
+        f  Temperature data (max frequency: 400 Hz):
+            ft  Temperature
+        b  Pressure data (max frequency: 100 Hz):
+            bp  Barometric Pressure
+        h  High-Rate data
+            ha  Accekeration HR (max frequency: 2000 Hz)
+            hr  Rate of Turn HR (max frequency: 1600 Hz)
+        p  Position and Velocity data (max frequency: 400 Hz):
+            pl  Latitude and Longitude
+            pv  Velocity
+            pa  Altitude Ellipsoid
+        g  GNSS data
+            gs  GNSS receiver status
+            gd  GNSS receiver DOP
+    Frequency is specified in decimal and is assumed to be the maximum
+    frequency if it is omitted.
+    Example:
+        The default configuration for Focus Mti680G can be specified as:
+            "se,sw,ts,tg,tu,ss,oq400,iv400,ir,iq,ia,pl400,pv,pa,gd,gs"
 
 
 Legacy options:
@@ -1853,152 +1806,178 @@ Deprecated options:
             115200/(PERIOD * (SKIPFACTOR + 1))
         If the value is 0xffff, no data is send unless a ReqData request
         is made.
-""")
+        ''',
+    )
+
+    # Commands
+    commands = parser.add_argument_group('Commands')
+    commands.add_argument('-r', '--reset', action='store_true', help='Reset device to factory defaults')
+    commands.add_argument('-e', '--echo', action='store_true', help='Print MTData (default if no other command)')
+    commands.add_argument('-i', '--inspect', action='store_true', help='Print current MT device configuration')
+    commands.add_argument(
+        '-l',
+        '--legacy-configure',
+        action='store_true',
+        help='Configure device in legacy mode (needs MODE and SETTINGS)',
+    )
+
+    # Configuration commands
+    config_commands = parser.add_argument_group('Configuration Commands')
+    config_commands.add_argument(
+        '-c', '--configure', metavar='OUTPUT', help='Configure the device output (see OUTPUT description)'
+    )
+    config_commands.add_argument(
+        '-a',
+        '--change-baudrate',
+        metavar='BAUD_CONFIG',
+        help='Change baudrate: format "x<freq><f>?,r<freq>" (e.g., "x115200f,r38400")',
+    )
+    config_commands.add_argument(
+        '--cb',
+        '--can-baudrate',
+        metavar='NEW_CAN_BAUD',
+        type=int,
+        dest='can_baudrate',
+        help='Change CAN baudrate (0 to disable)',
+    )
+    config_commands.add_argument(
+        '--cc',
+        '--can-configure',
+        metavar='CAN_OUTPUT',
+        dest='can_configure',
+        help='Configure CAN output (see CAN_OUTPUT description)',
+    )
+    config_commands.add_argument('-x', '--xkf-scenario', metavar='ID', type=int, help='Change current XKF scenario')
+    config_commands.add_argument(
+        '--gnss-lever-arm', metavar='X,Y,Z', help='Set GNSS receiver lever arm (format: X,Y,Z as floats)'
+    )
+    config_commands.add_argument('--import-xsa', metavar='FILE', help='Import XSA file (must end with .xsa)')
+    config_commands.add_argument('--export-xsa', metavar='FILE', help='Export XSA file (must end with .xsa)')
+
+    # Device options
+    device_options = parser.add_argument_group('Device Options')
+    device_options.add_argument(
+        '-d',
+        '--device',
+        metavar='DEV',
+        default='/dev/ttyUSB0',
+        help='Serial interface (default: /dev/ttyUSB0, use "auto" for auto-detection)',
+    )
+    device_options.add_argument(
+        '-b',
+        '--baudrate',
+        metavar='BAUD',
+        type=int,
+        help='Baudrate of serial interface (leave out to auto-detect)',
+    )
+    device_options.add_argument('-v', '--verbose', action='store_true', help='Verbose output')
+    device_options.add_argument(
+        '-n',
+        '--no-ack',
+        action='store_true',
+        help='No-acknowledgment mode: send commands without waiting for responses',
+    )
+
+    # Legacy options
+    legacy_options = parser.add_argument_group('Legacy Options')
+    legacy_options.add_argument(
+        '-m', '--output-mode', metavar='MODE', help='Legacy output mode (required for legacy-configure)'
+    )
+    legacy_options.add_argument(
+        '-s', '--output-settings', metavar='SETTINGS', help='Legacy output settings (required for legacy-configure)'
+    )
+    legacy_options.add_argument(
+        '-p', '--period', metavar='PERIOD', type=int, help='Sampling period in (1/115200) seconds (default: 1152)'
+    )
+    legacy_options.add_argument(
+        '-f',
+        '--deprecated-skip-factor',
+        metavar='SKIPFACTOR',
+        type=int,
+        help='Skip factor for mark III devices (default: 0)',
+    )
+
+    return parser
 
 
 ################################################################
 # Main function
 ################################################################
 def main():
-    # parse command line
-    shopts = 'hra:c:eild:b:m:s:p:f:x:vn'
-    lopts = [
-        'help',
-        'reset',
-        'import-xsa=',
-        'export-xsa=',
-        'change-baudrate=',
-        'configure=',
-        'cb=',
-        'cc=',
-        'echo',
-        'inspect',
-        'legacy-configure',
-        'device=',
-        'baudrate=',
-        'output-mode=',
-        'output-settings=',
-        'period=',
-        'deprecated-skip-factor=',
-        'xkf-scenario=',
-        'verbose',
-        'no-ack',
-        'gnss-lever-arm=',
-    ]
-    try:
-        opts, args = getopt.gnu_getopt(sys.argv[1:], shopts, lopts)
-    except getopt.GetoptError as e:
-        print(e)
-        # usage()
-        return 1
-    # default values
-    device = '/dev/ttyUSB0'
-    baudrate = None
+    parser = setup_argument_parser()
+    args = parser.parse_args()
+
+    # Determine actions based on arguments
+    actions = []
+
+    # Add actions based on arguments
+    if args.reset:
+        actions.append('reset')
+    if args.import_xsa:
+        actions.append('import-xsa')
+    if args.export_xsa:
+        actions.append('export-xsa')
+    if args.change_baudrate:
+        baud_config = get_baudrate_config(args.change_baudrate)
+        if baud_config is None:
+            return 1
+        actions.append('change-baudrate')
+    if args.configure:
+        output_config = get_output_config(args.configure)
+        if output_config is None:
+            return 1
+        actions.append('configure')
+    if args.can_baudrate is not None:
+        new_can_baudrate = args.can_baudrate
+        actions.append('can-baudrate')
+    if args.can_configure:
+        can_output_config = get_can_output_config(args.can_configure)
+        if can_output_config is None:
+            return 1
+        actions.append('can-configure')
+    if args.echo:
+        actions.append('echo')
+    if args.inspect:
+        actions.append('inspect')
+    if args.legacy_configure:
+        actions.append('legacy-configure')
+    if args.xkf_scenario is not None:
+        new_xkf = args.xkf_scenario
+        actions.append('xkf-scenario')
+    if args.gnss_lever_arm:
+        try:
+            gnss_lever_arm = [float(x) for x in args.gnss_lever_arm.split(',')]
+        except ValueError:
+            print("gnss-lever-arm argument must be in the format X,Y,Z (float)")
+            return 1
+        if len(gnss_lever_arm) != 3:
+            print("gnss-lever-arm argument must be in the format X,Y,Z (float)")
+            return 1
+        actions.append('gnss-lever-arm')
+
+    # Parse legacy mode and settings if provided
     mode = None
     settings = None
-    period = None
-    skipfactor = None
-    new_xkf = None
-    xsa_file = None
-    actions = []
-    verbose = False
-    no_ack = False
-    # filling in arguments
-    for o, a in opts:
-        if o in ('-h', '--help'):
-            usage()
-            return
-        elif o in ('-r', '--reset'):
-            actions.append('reset')
-        elif o in ('-a', '--change-baudrate'):
-            baud_config = get_baudrate_config(a)
-            if baud_config is None:
-                return 1
-            actions.append('change-baudrate')
-        elif o in ('-c', '--configure'):
-            output_config = get_output_config(a)
-            if output_config is None:
-                return 1
-            actions.append('configure')
-        elif o in ('--cb', '--can-baudrate'):
-            try:
-                new_can_baudrate = int(a)
-            except ValueError:
-                print("can_baudrate argument must be integer.")
-                return 1
-            actions.append('can-baudrate')
-        elif o in ('--cc', '--can-configure'):
-            can_output_config = get_can_output_config(a)
-            if can_output_config is None:
-                return 1
-            actions.append('can-configure')
-        elif o in ('-e', '--echo'):
-            actions.append('echo')
-        elif o in ('-i', '--inspect'):
-            actions.append('inspect')
-        elif o in ('-l', '--legacy-configure'):
-            actions.append('legacy-configure')
-        elif o in ('-x', '--xkf-scenario'):
-            try:
-                new_xkf = int(a)
-            except ValueError:
-                print("xkf-scenario argument must be integer.")
-                return 1
-            actions.append('xkf-scenario')
-        elif o in ('-d', '--device'):
-            device = a
-        elif o in ('-b', '--baudrate'):
-            try:
-                baudrate = int(a)
-            except ValueError:
-                print("baudrate argument must be integer.")
-                return 1
-        elif o in ('-m', '--output-mode'):
-            mode = get_mode(a)
-            if mode is None:
-                return 1
-        elif o in ('-s', '--output-settings'):
-            settings = get_settings(a)
-            if settings is None:
-                return 1
-        elif o in ('-p', '--period'):
-            try:
-                period = int(a)
-            except ValueError:
-                print("period argument must be integer.")
-                return 1
-        elif o in ('-f', '--skip-factor'):
-            try:
-                skipfactor = int(a)
-            except ValueError:
-                print("skip-factor argument must be integer.")
-                return 1
-        elif o in ('-v', '--verbose'):
-            verbose = True
-        elif o in ('-n', '--no-ack'):
-            no_ack = True
-        elif o in ('-g', '--gnss-lever-arm'):
-            try:
-                gnss_lever_arm = [float(x) for x in a.split(',')]
-            except ValueError:
-                print("gnss-lever-arm argument must be in the format X,Y,Z (float)")
-                return 1
-            if len(gnss_lever_arm) != 3:
-                print("gnss-lever-arm argument must be in the format X,Y,Z (float)")
-                return 1
-            actions.append('gnss-lever-arm')
-        elif o in ('--import-xsa'):
-            xsa_file = a
-            actions.append('import-xsa')
-        elif o in ('--export-xsa'):
-            xsa_file = a
-            actions.append('export-xsa')
-    # if nothing else: echo
+    if args.output_mode:
+        mode = get_mode(args.output_mode)
+        if mode is None:
+            return 1
+    if args.output_settings:
+        settings = get_settings(args.output_settings)
+        if settings is None:
+            return 1
+
+    # Default action if none specified
     if len(actions) == 0:
         actions.append('echo')
+
     try:
+        # Handle device auto-detection
+        device = args.device
+        baudrate = args.baudrate
+
         if device == 'auto':
-            devs = find_devices(verbose)
+            devs = find_devices(args.verbose)
             if devs:
                 print("Detected devices:" + "".join('\n\t%s @ %d' % (d, p) for d, p in devs))
                 print("Using %s @ %d" % devs[0])
@@ -2006,20 +1985,24 @@ def main():
             else:
                 print("No suitable device found.")
                 return 1
-        # find baudrate
+
+        # Find baudrate if not specified
         if not baudrate:
-            baudrate = find_baudrate(device, verbose)
+            baudrate = find_baudrate(device, args.verbose)
         if not baudrate:
             print("No suitable baudrate found.")
             return 1
-        # open device
+
+        # Open device
         try:
-            mt = MTDevice(device, baudrate, verbose=verbose, no_ack=no_ack)
+            mt = MTDevice(device, baudrate, verbose=args.verbose, no_ack=args.no_ack)
         except serial.SerialException:
             raise MTException("unable to open %s" % device)
-        # execute actions
+
+        # Execute actions
         if 'inspect' in actions:
             inspect(mt, device, baudrate)
+
         if 'change-baudrate' in actions:
             xbus_baud = None
             xbus_flow = None
@@ -2028,82 +2011,88 @@ def main():
             if ('x' in baud_config) and (baud_config['x'][0] is not None):
                 print("Changing xbus baudrate from %d to %d:" % (baudrate, baud_config['x'][0]))
                 sys.stdout.flush()
-
                 xbus_baud = baud_config['x'][0]
                 xbus_flow = baud_config['x'][1]
+
             if ('r' in baud_config) and (baud_config['r'][0] is not None):
                 print("Changing rtcm baudrate to %d:" % (baud_config['r'][0]))
                 sys.stdout.flush()
-
                 rtcm_baud = baud_config['r'][0]
 
             mt.ChangeBaudrate(xbus_baud, xbus_flow, rtcm_baud)
-            print(" Ok")  # should we test that it was actually ok?
+            print(" Ok")
+
         if 'reset' in actions:
             print("Restoring factory defaults")
             sys.stdout.flush()
             mt.RestoreFactoryDefaults()
-            print(" Ok")  # should we test that it was actually ok?
+            print(" Ok")
+
         if 'import-xsa' in actions:
             print("Importing XSA file")
             sys.stdout.flush()
-            mt.ImportXSA(xsa_file)
-            print(" Ok")  # should we test that it was actually ok?
+            mt.ImportXSA(args.import_xsa)
+            print(" Ok")
+
         if 'export-xsa' in actions:
             print("Exporting XSA file")
             sys.stdout.flush()
-            mt.ExportXSA(xsa_file)
-            print(" Ok")  # should we test that it was actually ok?
+            mt.ExportXSA(args.export_xsa)
+            print(" Ok")
+
         if 'configure' in actions:
             print("Changing output configuration")
             sys.stdout.flush()
             mt.SetOutputConfiguration(output_config)
-            print(" Ok")  # should we test that it was actually ok?
+            print(" Ok")
+
         if 'can-baudrate' in actions:
-            print("Changing can baudrate to %d:" % (new_can_baudrate))
+            print("Changing can baudrate to %d:" % new_can_baudrate)
             sys.stdout.flush()
             mt.SetCanConfig(new_can_baudrate)
-            print(" Ok")  # should we test that it was actually ok?
+            print(" Ok")
+
         if 'can-configure' in actions:
             print("Changing output can configuration")
             sys.stdout.flush()
             mt.SetCanOutputConfig(can_output_config)
-            print(" Ok")  # should we test that it was actually ok?
+            print(" Ok")
 
         if 'legacy-configure' in actions:
             if mode is None:
-                print("output-mode is require to configure the device in " "legacy mode.")
+                print("output-mode is required to configure the device in legacy mode.")
                 return 1
             if settings is None:
-                print("output-settings is required to configure the device in " "legacy mode.")
+                print("output-settings is required to configure the device in legacy mode.")
                 return 1
             print("Configuring in legacy mode")
             sys.stdout.flush()
-            mt.configure_legacy(mode, settings, period, skipfactor)
-            print(" Ok")  # should we test it was actually ok?
+            mt.configure_legacy(mode, settings, args.period, args.deprecated_skip_factor)
+            print(" Ok")
+
         if 'xkf-scenario' in actions:
             print("Changing XKF scenario")
             sys.stdout.flush()
             mt.SetCurrentScenario(new_xkf)
             print("Ok")
-        if 'echo' in actions:
-            # if (mode is None) or (settings is None):
-            #     mode, settings, length = mt.auto_config()
-            #     print mode, settings, length
-            try:
-                while True:
-                    print(mt.read_measurement(mode, settings))
-            except KeyboardInterrupt:
-                pass
+
         if 'gnss-lever-arm' in actions:
             print("Setting GNSS lever arm to %s" % gnss_lever_arm)
             sys.stdout.flush()
             mt.SetGnssLeverArm(gnss_lever_arm[0], gnss_lever_arm[1], gnss_lever_arm[2])
             print("Ok")
+
+        if 'echo' in actions:
+            try:
+                while True:
+                    print(mt.read_measurement(mode, settings))
+            except KeyboardInterrupt:
+                pass
+
     except MTErrorMessage as e:
-        print("MTErrorMessage: ", e)
+        print("MTErrorMessage:", e)
     except MTException as e:
-        print("MTException: ", e)
+        print("MTException:", e)
 
 
 def inspect(mt, device, baudrate):
