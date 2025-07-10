@@ -18,6 +18,7 @@ One can configure the IMU using a series of strings. This information can also b
 *Note:*
 - baudrate: leave out to auto-detect
 - device: defaults to /dev/ttyUSB0, set to "auto" to auto-detect
+- If using a device that can't receive serial messages use `-n` flag
 - If seeing `MTErrorMessage: Error message 0x29: Data overflow...`:  Try command again sometimes takes a few tries
 ```
 python mtdevice.py --buadrate=115200 --device=/dev/ttyUSB0 --import-xsa=xsens_config_prod.xsa 

@@ -260,6 +260,9 @@ class MTDevice(object):
         if not filename.endswith('.xsa'):
             print(f"XSA file {filename} is not a valid XSA file")
             return
+        if self.no_ack:
+            print("No-ack mode is enabled. Device will not respond with serial data.")
+            return
 
         print(f"Exporting settings to {filename}...")
         self._ensure_config_state()
@@ -394,7 +397,8 @@ class MTDevice(object):
         self.Reset()
         self.device.flush()
         time.sleep(0.01)
-        self.read_msg()
+        if not self.no_ack:
+            self.read_msg()
         self.write_msg(MID.WakeUpAck)
 
     def GoToConfig(self):
@@ -2001,7 +2005,10 @@ def main():
 
         # Execute actions
         if 'inspect' in actions:
-            inspect(mt, device, baudrate)
+            if not args.no_ack:
+                inspect(mt, device, baudrate)
+            else:
+                print("No-ack mode is enabled. Device will not respond with serial data.")
 
         if 'change-baudrate' in actions:
             xbus_baud = None
@@ -2085,9 +2092,14 @@ def main():
         if 'echo' in actions:
             try:
                 while True:
+                    if args.no_ack:
+                        print("No-ack mode is enabled. Device will not respond with serial data.")  
+                        break
                     print(mt.read_measurement(mode, settings))
             except KeyboardInterrupt:
                 pass
+
+        mt._ensure_measurement_state()
 
     except MTErrorMessage as e:
         print("MTErrorMessage:", e)
