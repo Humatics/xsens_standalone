@@ -24,6 +24,8 @@ One can configure the IMU using a series of strings. This information can also b
 python mtdevice.py --buadrate=115200 --device=/dev/ttyUSB0 --import-xsa=xsens_config_prod.xsa 
 python mtdevice.py --baudrate=115200 --device=/dev/ttyUSB0 --cc="se,sw,ts,tg,tu,ss,oq400,iv400,ir,iq,ia,pl400,pv,pa,gd,gs"
 ```
+
+```
 The format is a sequence of "<group><type><frequency>?<format>?"
 separated by commas.
 The frequency and format are optional.
