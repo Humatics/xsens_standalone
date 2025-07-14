@@ -25,6 +25,15 @@ from mtdef import (
 )
 
 
+def _byte(b):
+    """Convert the given character or byte to a byte."""
+    if sys.version_info[0] == 2:
+        return ord(b)
+    if isinstance(b, bytearray):
+        return b[0]
+    return b
+
+
 ################################################################
 # MTDevice class
 ################################################################
@@ -32,7 +41,15 @@ class MTDevice(object):
     """XSens MT device communication object."""
 
     def __init__(
-        self, port, baudrate=115200, timeout=0.02, autoconf=True, config_mode=False, verbose=False, no_ack=False
+        self,
+        port,
+        baudrate=115200,
+        timeout=0.002,
+        autoconf=True,
+        config_mode=False,
+        verbose=False,
+        no_ack=False,
+        initial_wait=0.1,
     ):
         """Open device."""
         self.verbose = verbose
@@ -43,6 +60,7 @@ class MTDevice(object):
         except IOError:
             # FIXME with pyserial3 we might need some specific flags
             self.device = serial.Serial(port, baudrate, timeout=timeout, writeTimeout=timeout, rtscts=True, dsrdtr=True)
+        time.sleep(initial_wait)  # open returns before device is ready
         self.device.flushInput()  # flush to make sure the port is ready TODO
         self.device.flushOutput()  # flush to make sure the port is ready TODO
         # timeout for communication
@@ -77,12 +95,15 @@ class MTDevice(object):
         else:
             lendat = struct.pack('!B', length)
         packet = b'\xfa\xff' + struct.pack('!B', mid) + lendat + data
-        packet += struct.pack('!B', 0xFF & (-(sum(packet[1:]))))
+        packet += struct.pack('!B', 0xFF & (-(sum(map(_byte, packet[1:])))))
         msg = packet
         start = time.time()
         while ((time.time() - start) < self.timeout) and self.device.read():
             pass
-        self.device.write(msg)
+        try:
+            self.device.write(msg)
+        except serial.serialutil.SerialTimeoutException:
+            raise MTTimeoutException("writing message")
         if self.verbose:
             print(
                 "MT: Write message id 0x%02X (%s) with %d data bytes: [%s]"
@@ -132,7 +153,7 @@ class MTDevice(object):
                 buf.extend(self.waitfor(totlength - len(buf)))
             if 0xFF & sum(buf[1:]):
                 if self.verbose:
-                    sys.stderr.write("MT: invalid checksum; discarding data and" " waiting for next message.\n")
+                    sys.stderr.write("MT: invalid checksum; discarding data and waiting for next message.\n")
                 del buf[: buf.find(self.header) - 2]
                 continue
             data = str(buf[-self.length - 1 : -1])
@@ -146,10 +167,10 @@ class MTDevice(object):
         start = time.time()
         while (time.time() - start) < self.timeout:
             # first part of preamble
-            if self.waitfor()[0] != 0xFA:
+            if _byte(self.waitfor()) != 0xFA:
                 continue
             # second part of preamble
-            if self.waitfor()[0] != 0xFF:  # we assume no timeout anymore
+            if _byte(self.waitfor()) != 0xFF:  # we assume no timeout anymore
                 continue
             # read message id and length of message
             mid, length = struct.unpack('!BB', self.waitfor(2))
@@ -444,10 +465,13 @@ class MTDevice(object):
             if self.verbose:
                 print("  No-ACK mode: cannot read firmware revision")
             return (0, 0, 0)  # Return dummy values
-        # XXX unpacking only 3 characters in accordance with the documentation
-        # but some devices send 11 bytes instead.
-        major, minor, revision = struct.unpack('!BBB', data[:3])
-        return (major, minor, revision)
+        if len(data) == 3:
+            major, minor, revision = struct.unpack('!BBB', data)
+            return (major, minor, revision)
+        else:
+            # TODO check buildnr/svnrev not sure unsigned
+            major, minor, rev, buildnr, svnrev = struct.unpack('!BBBII', data)
+            return (major, minor, rev, buildnr, svnrev)
 
     def RunSelfTest(self):
         """Run the built-in self test."""
@@ -1182,7 +1206,7 @@ class MTDevice(object):
                     o['hdop'],
                     o['ndop'],
                     o['edop'],
-                ) = struct.unpack('!IHBBBBBBIiBBBBiiiiIIiiiiiIIiHHHHHHH', content)
+                ) = struct.unpack('!IHBBBBBBIiBBBxiiiiIIiiiiiIIiHHHHHHH', content)
                 # scaling correction
                 o['lon'] *= 1e-7
                 o['lat'] *= 1e-7
@@ -1193,7 +1217,7 @@ class MTDevice(object):
                 o['tdop'] *= 0.01
                 o['vdop'] *= 0.01
                 o['hdop'] *= 0.01
-                o['bdop'] *= 0.01
+                o['ndop'] *= 0.01
                 o['edop'] *= 0.01
             elif (data_id & 0x00F0) == 0x20:  # GNSS satellites info
                 o['iTOW'], o['numSvs'] = struct.unpack('!LBxxx', content[:8])
@@ -1367,7 +1391,7 @@ class MTDevice(object):
 
         # data object
         output = {}
-        while data:
+        while len(data) > 0:
             try:
                 data_id, size = struct.unpack('!HB', data[:3])
                 if (data_id & 0x0003) == 0x3:
@@ -1411,7 +1435,7 @@ class MTDevice(object):
                 else:
                     raise MTException("unknown XDI group: 0x%04X." % group)
             except struct.error:
-                raise MTException("couldn't parse MTData2 message.")
+                raise MTException("couldn't parse MTData2 message (data_id: " "0x%04X, size: %d)." % (data_id, size))
         return output
 
     def parse_MTData(self, data, mode=None, settings=None):
@@ -2093,7 +2117,7 @@ def main():
             try:
                 while True:
                     if args.no_ack:
-                        print("No-ack mode is enabled. Device will not respond with serial data.")  
+                        print("No-ack mode is enabled. Device will not respond with serial data.")
                         break
                     print(mt.read_measurement(mode, settings))
             except KeyboardInterrupt:
@@ -2412,8 +2436,14 @@ def inspect(mt, device, baudrate):
 
     def firmware_fmt(fw):
         """Format firmware revision."""
-        major, minor, revision = fw
-        return '{}.{}.{}'.format(major, minor, revision)
+        if len(fw) == 3:
+            major, minor, revision = fw
+            return '{}.{}.{}'.format(major, minor, revision)
+        elif len(fw) == 5:
+            major, minor, revision, buildnr, svnrev = fw
+            return '{}.{}.{} (build: {}, svn: {})'.format(major, minor, revision, buildnr, svnrev)
+        else:
+            return str(fw)
 
     def hardware_version_fmt(hw):
         """Format hardware version."""
