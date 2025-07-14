@@ -2099,7 +2099,8 @@ def main():
             except KeyboardInterrupt:
                 pass
 
-        mt._ensure_measurement_state()
+        if 'echo' not in actions:
+            mt._ensure_measurement_state()
 
     except MTErrorMessage as e:
         print("MTErrorMessage:", e)
