@@ -48,12 +48,6 @@ class MID:
     # Restore factory defaults
     RestoreFactoryDef = 0x0E
 
-    # Baudrate, 1 byte
-    # * The SetBaudrate message is deprecated on the MTi 600-series. Use
-    #   SetPortConfig (0x8C) instead.
-    # https://www.xsens.com/hubfs/Downloads/Manuals/MT_Low-Level_Documentation.pdf
-    SetBaudrate = 0x18
-
     # Run the built-in self test (MTi-1/10/100 series)
     RunSelftest = 0x24
     # Self test results, 2 bytes
@@ -150,6 +144,8 @@ class DeprecatedMID:
     SetSyncOutSettings = 0xD8
 
     # Configuration messages
+    # Baudrate, 1 byte. The SetBaudrate message is deprecated on the MTi 600-series. Use SetPortConfig (0x8C) instead.
+    SetBaudrate = 0x18
     # Skip factor (MTi/MTi-G only), 2 bytes
     SetOutputSkipFactor = 0xD4
     # Object alignment matrix, 9*4 bytes
@@ -194,9 +190,9 @@ class Baudrates(object):
 
     # Baudrate mapping between ID and value
     Baudrates = [
+        (0x0C, 2000000),  # 2 Mbaud support
         (0x80, 921600),
         (0x0A, 921600),
-        (0x0C, 2000000),  # 2 Mbaud support
         (0x00, 460800),
         (0x01, 230400),
         (0x02, 115200),
@@ -208,7 +204,6 @@ class Baudrates(object):
         (0x08, 14400),
         (0x09, 9600),
         (0x0B, 4800),
-        (0x80, 921600),
     ]
 
     Can_Baudrates = [
@@ -411,7 +406,7 @@ class MTWarningMessage(MTException):
         if self.description_string:
             result += f' - {self.description_string}'
         if self.possible_causes:
-            result += f'\nPossible causes:\n'
+            result += '\nPossible causes:\n'
             for cause in self.possible_causes:
                 result += f'  - {cause}\n'
         return result.rstrip()

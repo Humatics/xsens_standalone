@@ -9,21 +9,35 @@ This is just a small program that does not depend on the ROS framework that allo
 * mtdevice.py - Actual python driver, opens a serial port with the IMU
 * mtnode.py - Wrapper that will try to get a new message from IMU as soon as possible
 
+## Contributing
+The following commands only need to be run once to setup precommit hooks:
+```bash
+pip install pre-commit
+pre-commit install
+```
+
+Now on `git commit` all pre-commit hooks will be run automatically on only changed files. If you want to manually run the hooks:
+
+```bash
+pre-commit run # only on staged files
+pre-commit run -a # on all files
+```
 
 ## Configuration
 
 One can configure the IMU using a series of strings. This information can also be found in the bottom of the `mtdevice.py` file. One can then call `mtdevice.get_output_config(args)` to get the config file, and then finally configure the IMU by calling `SetOutputConfiguration()`.
 
-**To apply Focus configuration:**  
+**To apply Focus configuration:**
+```
+python mtdevice.py --buadrate=115200 --device=/dev/ttyTHS1 --import-xsa=xsens_config_prod.xsa
+python mtdevice.py --baudrate=115200 --device=/dev/ttyTHS1 --cc="se,sw,ts,tg,tu,ss,oq400,iv400,ir,iq,ia,pl400,pv,pa,gd,gs"
+```
 *Note:*
-- baudrate: leave out to auto-detect
-- device: defaults to /dev/ttyUSB0, set to "auto" to auto-detect
 - If using a device that can't receive serial messages use `-n` flag
+- If device can receive serial:
+  - baudrate: leave out to auto-detect
+  - device: defaults to /dev/ttyUSB0, set to "auto" to auto-detect
 - If seeing `MTErrorMessage: Error message 0x29: Data overflow...`:  Try command again sometimes takes a few tries
-```
-python mtdevice.py --buadrate=115200 --device=/dev/ttyUSB0 --import-xsa=xsens_config_prod.xsa 
-python mtdevice.py --baudrate=115200 --device=/dev/ttyUSB0 --cc="se,sw,ts,tg,tu,ss,oq400,iv400,ir,iq,ia,pl400,pv,pa,gd,gs"
-```
 
 ```
 The format is a sequence of "<group><type><frequency>?<format>?"

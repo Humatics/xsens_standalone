@@ -61,8 +61,8 @@ class MTDevice(object):
             # FIXME with pyserial3 we might need some specific flags
             self.device = serial.Serial(port, baudrate, timeout=timeout, writeTimeout=timeout, rtscts=True, dsrdtr=True)
         time.sleep(initial_wait)  # open returns before device is ready
-        self.device.flushInput()  # flush to make sure the port is ready TODO
-        self.device.flushOutput()  # flush to make sure the port is ready TODO
+        self.device.flushInput()  # flush to make sure the port is ready
+        self.device.flushOutput()  # flush to make sure the port is ready
         # timeout for communication
         self.timeout = 100 * timeout
         # state of the device
@@ -309,7 +309,7 @@ class MTDevice(object):
 
         with open(filename, 'w') as f:
             # Write file header
-            f.write("; XSA file created by MTDevice Python client\n")
+            f.write("; XSA file created by Humatics MTDevice Python client\n")
             f.write(f"; Exported on: {time.ctime()}\n")
 
             # Write Info section
@@ -1858,7 +1858,7 @@ Deprecated options:
         '-a',
         '--change-baudrate',
         metavar='BAUD_CONFIG',
-        help='Change baudrate: format "x<freq><f>?,r<freq>" (e.g., "x115200f,r38400")',
+        help='Change baudrate: format "x<freq><f>?,r<freq>" (e.g. "x115200f,r38400") x=xbus, r=rtcm, f=flow control(optional)',
     )
     config_commands.add_argument(
         '--cb',
@@ -2325,9 +2325,9 @@ def inspect(mt, device, baudrate):
 
             # Trigger type
             if trigger == 0:
-                lines.append(f"\n      Trigger:                        Continuous")
+                lines.append("\n      Trigger:                        Continuous")
             else:
-                lines.append(f"\n      Trigger:                        Single shot")
+                lines.append("\n      Trigger:                        Single shot")
 
             # Skip settings
             lines.append(f"\n      Skip First:                     {skip_first}")
@@ -2587,9 +2587,9 @@ def inspect(mt, device, baudrate):
         if can_enable:
             lines.append(f"Enabled, {baudrate_str} baud")
             if termination_120:
-                lines.append(f"    120Ω termination:               Enabled")
+                lines.append("    120Ω termination:               Enabled")
         else:
-            lines.append(f"Disabled")
+            lines.append("Disabled")
 
         return '\n    '.join([''] + lines) if len(lines) > 1 else lines[0] if lines else "No CAN config"
 
